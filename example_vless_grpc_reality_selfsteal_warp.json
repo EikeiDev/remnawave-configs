@@ -1,0 +1,105 @@
+{
+  "log": {
+    "loglevel": "none"
+  },
+  "inbounds": [
+    {
+      "tag": "VLESS_GRPC_REALITY_SELFSTEAL_WARP",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls"
+        ]
+      },
+      "streamSettings": {
+        "network": "grpc",
+        "security": "reality",
+        "grpcSettings": {
+          "authority": "127.0.0.1:9443",
+          "multiMode": false,
+          "serviceName": "#REPLACE_WITH_YOUR_SERVICENAME, EXAMPLE: xyz"
+        },
+        "realitySettings": {
+          "show": false,
+          "xver": 0,
+          "target": "127.0.0.1:9443",
+          "shortIds": [
+            "",
+          ],
+          "privateKey": "#REPLACE_WITH_YOUR_PRIVATE_KEY, GENERATE BELOW ↓",
+          "fingerprint": "chrome",
+          "serverNames": [
+            "#REPLACE_WITH_YOUR_SERVER_NAMES, EXAMPLE: example.com"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      }
+    },
+    {
+      "tag": "warp-out",
+      "protocol": "wireguard",
+      "settings": {
+        "peers": [
+          {
+            "endpoint": "162.159.195.1:500",
+            "publicKey": "#REPLACE_WITH_YOUR_PUBLICKEY_FROM_WARP"
+          }
+        ],
+        "address": [
+          "#REPLACE_WITH_YOUR_ADRESS_FROM_WARP. EXAMPLE: 172.16.0.2/32"
+        ],
+        "reserved": [
+          0,
+          0,
+          0
+        ],
+        "secretKey": "#REPLACE_WITH_YOUR_SECRETKEY_FROM_WARP"
+      }
+    },
+    {
+      "tag": "blocked",
+      "protocol": "blackhole",
+      "settings": {}
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "blocked"
+      },
+      {
+        "ip": [
+          "geoip:private"
+        ],
+        "type": "field",
+        "outboundTag": "blocked"
+      },
+      {
+        "domain": [
+          "#REPLACE_WITH_YOUR_DOMAIN. EXAMPLE: geosite:google-gemini"
+        ],
+        "outboundTag": "warp-out"
+      },
+    ],
+    "domainStrategy": "IPIfNonMatch"
+  }
+}
