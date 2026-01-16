@@ -1,0 +1,80 @@
+{
+  "log": {
+    "loglevel": "none"
+  },
+  "inbounds": [
+    {
+      "tag": "VLESS_XHTTP_TLS",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "tls",
+        "tlsSettings": {
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ],
+          "serverName": "#REPLACE_WITH_YOUR_SERVER_NAME, EXAMPLE: example.com",
+          "certificates": [
+            {
+              "keyFile": "#PLACE YOUR SSL CERTIFICATE KEY FILE INSIDE REMNAWAVE PANEL, EXAMPLE: /var/lib/remnawave/configs/xray/ssl/cert.key",
+              "certificateFile": "#PLACE YOUR SSL CERTIFICATE FILE INSIDE REMNAWAVE PANEL, EXAMPLE: /var/lib/remnawave/configs/xray/ssl/cert.pem"
+            }
+          ]
+        },
+        "xhttpSettings": {
+          "host": "#REPLACE_WITH_YOUR_SERVER_NAME, EXAMPLE: example.com",
+          "path": "/"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "DIRECT",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "BLOCK",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "rules": [
+      {
+        "ip": [
+          "geoip:private"
+        ],
+        "type": "field",
+        "outboundTag": "BLOCK"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:private"
+        ],
+        "outboundTag": "BLOCK"
+      },
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "BLOCK"
+      }
+    ]
+  }
+}
