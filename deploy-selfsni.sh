@@ -4,6 +4,22 @@
 # Dedicated High-Entropy Camouflage & Fallback Engine for Xray Reality / XHTTP
 # ==============================================================================
 
+# Проверка интерпретатора: требуется bash, а не dash/sh
+if [ -z "${BASH_VERSION:-}" ]; then
+    echo ""
+    echo "===================================================================="
+    echo " [ОШИБКА] Скрипт запущен через интерпретатор 'sh' (dash)!"
+    echo " Для корректной работы SelfSNI и генератора сайтов требуется BASH."
+    echo ""
+    echo " Пожалуйста, запустите установку правильной командой через 'bash':"
+    echo " bash <(wget -qO- https://raw.githubusercontent.com/EikeiDev/remnawave-configs/refs/heads/main/deploy-selfsni.sh)"
+    echo " или:"
+    echo " bash <(curl -sSL https://raw.githubusercontent.com/EikeiDev/remnawave-configs/refs/heads/main/deploy-selfsni.sh)"
+    echo "===================================================================="
+    echo ""
+    exit 1
+fi
+
 set -euo pipefail
 
 # --- Константы и пути ---
