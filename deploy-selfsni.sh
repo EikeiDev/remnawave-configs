@@ -2054,9 +2054,18 @@ EOF
 
 # Установка симлинка/команды selfsni
 install_bin_link() {
-    # Копируем текущий скрипт в /usr/local/bin/selfsni
-    cp "$0" "$BIN_LINK" 2>/dev/null || true
-    chmod +x "$BIN_LINK" 2>/dev/null || true
+    # 1. Если запущен из нормального файла на диске:
+    if [[ "$0" != /dev/fd/* ]] && [[ "$0" != /proc/self/fd/* ]] && [[ "$0" != "bash" ]] && [[ "$0" != "sh" ]] && [ -f "$0" ]; then
+        if [ "$0" != "$BIN_LINK" ]; then
+            cp "$0" "$BIN_LINK" 2>/dev/null || true
+            chmod +x "$BIN_LINK" 2>/dev/null || true
+        fi
+    else
+        # 2. Если запущен через curl/wget или pipe: скачиваем скрипт в BIN_LINK
+        curl -sSL "https://raw.githubusercontent.com/EikeiDev/remnawave-configs/refs/heads/main/deploy-selfsni.sh" -o "$BIN_LINK" 2>/dev/null || \
+        wget -qO "$BIN_LINK" "https://raw.githubusercontent.com/EikeiDev/remnawave-configs/refs/heads/main/deploy-selfsni.sh" 2>/dev/null || true
+        chmod +x "$BIN_LINK" 2>/dev/null || true
+    fi
 }
 
 # ==============================================================================
@@ -2291,10 +2300,10 @@ EOF
 # ТОЧКА ВХОДА (MAIN)
 # ==============================================================================
 check_root
-install_bin_link
 
 if load_config; then
-    # Если конфигурация уже есть — сразу открываем меню!
+    # Если конфигурация уже есть — проверяем симлинк и сразу открываем меню!
+    [ -f "$BIN_LINK" ] || install_bin_link
     show_menu
 else
     # Первоначальный запуск
