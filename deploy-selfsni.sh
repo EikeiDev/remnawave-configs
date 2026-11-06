@@ -1425,7 +1425,7 @@ configure_nginx() {
     local target_domain="$1"
     local target_port="$2"
     local use_proxy="$3"
-    local target_root="$4"
+    local target_root="${4:-${WEB_ROOT:-/var/www/$target_domain}}"
 
     # Гарантируем наличие файла blacklist.conf до сборки vhost
     mkdir -p /etc/nginx
@@ -2068,6 +2068,56 @@ install_bin_link() {
     fi
 }
 
+# Переключение PROXY Protocol (xver)
+toggle_proxy_protocol() {
+    check_root
+    local current_val="${USE_PROXY_FLAG:-0}"
+    local new_val=0
+    local mode_desc=""
+
+    if [ "$current_val" -eq 1 ]; then
+        new_val=0
+        mode_desc="${YELLOW}ВЫКЛЮЧЕН (xver: 0)${NC} (Режим для Hysteria 2 / dokodemo-door)"
+    else
+        new_val=1
+        mode_desc="${GREEN}ВКЛЮЧЕН (xver: 1)${NC} (Режим для Xray Reality)"
+    fi
+
+    echo -e "\n${CYAN}====================================================================${NC}"
+    echo -e "${CYAN}         ПЕРЕКЛЮЧЕНИЕ РЕЖИМА PROXY PROTOCOL (XVER)                  ${NC}"
+    echo -e "${CYAN}====================================================================${NC}"
+    echo -e "Текущее состояние: $([ "$current_val" -eq 1 ] && echo -e "${GREEN}ВКЛЮЧЕН (xver: 1)${NC}" || echo -e "${YELLOW}ВЫКЛЮЧЕН (xver: 0)${NC}")"
+    echo -e "Новое состояние:   $mode_desc"
+    echo ""
+
+    USE_PROXY_FLAG="$new_val"
+    save_config
+
+    log_info "Генерация обновленной конфигурации Nginx..."
+    configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+
+    if nginx -t; then
+        systemctl reload nginx
+        log_ok "Конфигурация Nginx успешно обновлена и перезагружена!"
+        if [ "$new_val" -eq 1 ]; then
+            log_info "Nginx теперь ожидает трафик с заголовками PROXY Protocol (xver: 1)."
+            log_info "В конфигурации Xray Reality укажите: \"xver\": 1"
+        else
+            log_info "Nginx теперь принимает прямой TLS без PROXY Protocol (xver: 0)."
+            log_info "В конфигурации Xray укажите: \"xver\": 0 (подходит для Hysteria 2 и dokodemo-door)."
+        fi
+    else
+        log_err "Ошибка синтаксиса Nginx! Откат к предыдущему значению..."
+        USE_PROXY_FLAG="$current_val"
+        save_config
+        configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+        systemctl reload nginx 2>/dev/null || true
+    fi
+
+    echo -e "\n${CYAN}Нажмите Enter для возврата в меню...${NC}"
+    read -r || true
+}
+
 # ==============================================================================
 # ГЛАВНОЕ ИНТЕРАКТИВНОЕ МЕНЮ (КОМАНДА: selfsni)
 # ==============================================================================
@@ -2086,8 +2136,14 @@ show_menu() {
         fi
 
         local proxy_str="xver: 0 (Выкл)"
+        local proxy_color="${YELLOW}"
+        local proxy_note="Для Hysteria 2 / dokodemo"
+        local proxy_toggle_hint="${YELLOW}ВЫКЛ (0)${NC} ➔ ${GREEN}Включить (1)${NC}"
         if [ "${USE_PROXY_FLAG:-0}" -eq 1 ]; then
             proxy_str="xver: 1 (Вкл)"
+            proxy_color="${GREEN}"
+            proxy_note="Для Xray Reality"
+            proxy_toggle_hint="${GREEN}ВКЛ (1)${NC} ➔ ${YELLOW}Выключить (0)${NC}"
         fi
 
         local ssl_days="N/A"
@@ -2120,7 +2176,8 @@ show_menu() {
         echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────────┤${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Статус:${NC}        ${status_color}${status_str} ●${NC} ${DIM}[Nginx HTTP/2 + TLS 1.3 + OCSP]${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Домен SNI:${NC}     ${WHITE}${DOMAIN:-Не установлен}${NC}"
-        echo -e "${CYAN}│${NC}  ${BOLD}• Локальный сокет:${NC} ${WHITE}127.0.0.1:${FALLBACK_PORT:-9443}${NC} ${DIM}(PROXY-proto: ${proxy_str})${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Локальный сокет:${NC} ${WHITE}127.0.0.1:${FALLBACK_PORT:-9443}${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• PROXY Protocol:${NC} ${proxy_color}${proxy_str}${NC} ${DIM}[${proxy_note}]${NC}"
         local blocked_rules="0"
         if [ -f "/etc/nginx/blacklist.conf" ]; then
             blocked_rules=$(grep -c "^deny " /etc/nginx/blacklist.conf 2>/dev/null || echo "0")
@@ -2136,7 +2193,7 @@ show_menu() {
         echo -e "   ${BOLD}1${NC} ❯ 🎲 Пересобрать сайт со случайной архитектурой и темой"
         echo -e "   ${BOLD}2${NC} ❯ 🎨 Выбрать конкретную архитектуру верстки (Bento / SaaS / SOC / AI)"
         echo -e "   ${BOLD}3${NC} ❯ 🧪 Запустить Camouflage Self-Test (проверка 80, 9443, /health, /api/)"
-        echo -e "   ${BOLD}4${NC} ❯ 📋 Конфигурация realitySettings для Xray"
+        echo -e "   ${BOLD}4${NC} ❯ 📋 Конфигурации для Xray / Remnawave (Reality + Hysteria 2)"
         echo ""
         echo -e " ${BOLD}${YELLOW}[ 2 ] МОНИТОРИНГ И АНАЛИЗАТОР ТСПУ${NC}"
         echo -e "   ${BOLD}5${NC} ❯ 🕵️  Детектор сканеров ТСПУ и подозрительных IP-адресов"
@@ -2147,18 +2204,19 @@ show_menu() {
         echo -e " ${BOLD}${GREEN}[ 3 ] УПРАВЛЕНИЕ SSL СЕРТИФИКАТАМИ${NC}"
         echo -e "   ${BOLD}9${NC} ❯ 🔐 Выпустить / Перевыпустить чистый SSL (Auto / ZeroSSL / Let's Encrypt)"
         echo ""
-        echo -e " ${BOLD}${BLUE}[ 4 ] СЛУЖБА NGINX${NC}"
+        echo -e " ${BOLD}${BLUE}[ 4 ] СЛУЖБА NGINX И СЕТЬ${NC}"
         echo -e "  ${BOLD}10${NC} ❯ 🔄 Перезапустить Nginx (Reload / Restart)"
         echo -e "  ${BOLD}11${NC} ❯ ⏹  Остановить Nginx"
         echo -e "  ${BOLD}12${NC} ❯ ▶️  Запустить Nginx"
         echo -e "  ${BOLD}13${NC} ❯ 📝 Редактировать vhost конфигурацию (/etc/nginx/sites-available/...)"
+        echo -e "  ${BOLD}14${NC} ❯ ⚡ Переключить PROXY Protocol [${proxy_toggle_hint}]"
         echo ""
         echo -e " ${BOLD}${RED}[ 5 ] СИСТЕМА${NC}"
-        echo -e "  ${BOLD}14${NC} ❯ 🔁 Переустановить / Сменить домен"
-        echo -e "  ${BOLD}15${NC} ❯ 🗑️  Полное удаление SelfSNI"
+        echo -e "  ${BOLD}15${NC} ❯ 🔁 Переустановить / Сменить домен"
+        echo -e "  ${BOLD}16${NC} ❯ 🗑️  Полное удаление SelfSNI"
         echo -e "   ${BOLD}0${NC} ❯ 🚪 Выход в консоль"
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
-        read -rp "❯ Выберите действие [0-15]: " choice || true
+        read -rp "❯ Выберите действие [0-16]: " choice || true
 
         case "$choice" in
             1)
@@ -2265,10 +2323,13 @@ EOF
                 nginx -t && systemctl reload nginx 2>/dev/null || true
                 ;;
             14)
+                toggle_proxy_protocol
+                ;;
+            15)
                 install_selfsni
                 load_config || true
                 ;;
-            15)
+            16)
                 echo -e "\n${RED}ВЫ УВЕРЕНЫ, ЧТО ХОТИТЕ УДАЛИТЬ SELFSNI?${NC}"
                 read -rp "Введите 'yes' для подтверждения удаления: " confirm_del || true
                 if [ "$confirm_del" = "yes" ]; then
