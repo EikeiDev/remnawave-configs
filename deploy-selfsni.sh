@@ -79,6 +79,7 @@ ENABLE_PQC="${ENABLE_PQC:-0}"
 REMNANODE_PORT="${REMNANODE_PORT:-}"
 PANEL_IP="${PANEL_IP:-}"
 HARDENING_BBR="${HARDENING_BBR:-0}"
+XHTTP_PATH="${XHTTP_PATH:-/api/v1/files/upload}"
 EOF
 }
 
@@ -211,6 +212,9 @@ EOF
 EOF
 
     chmod -R a+rX "$target_root" 2>/dev/null || true
+    if [ -n "${XHTTP_PATH:-}" ] && [ "${XHTTP_PATH}" != "/api/v1/files/upload" ] && [ -f "$target_root/index.html" ]; then
+        sed -i "s|/api/v1/files/upload|${XHTTP_PATH}|g" "$target_root/index.html" 2>/dev/null || true
+    fi
     log_ok "Шлюз-маскировка успешно сгенерирован (Стиль: $ARCHETYPE_NAME, Бренд: $COMPANY_NAME)!"
 }
 
@@ -1385,10 +1389,10 @@ $set_real_ip_dirs
     }
 
     # Выделенный служебный декой для рабочего XHTTP upload пути
-    location = /api/v1/files/upload {
+    location = ${XHTTP_PATH:-/api/v1/files/upload} {
         default_type application/json;
         if (\$request_method = POST) {
-            return 401 '{"status":"error","code":"UNAUTHORIZED","message":"Multipart session authorization signature required","path":"/api/v1/files/upload"}';
+            return 401 '{"status":"error","code":"UNAUTHORIZED","message":"Multipart session authorization signature required","path":"${XHTTP_PATH:-/api/v1/files/upload}"}';
         }
         return 405 '{"status":"error","code":"METHOD_NOT_ALLOWED","message":"POST multipart/form-data required on file upload endpoint"}';
     }
@@ -1516,14 +1520,15 @@ run_self_test() {
     fi
     echo -e "${GREEN}[✓] Health API      -> HTTP ${health_code:-200} OK (Живой статус узла активен)${NC}"
 
+    local xhttp_route="${XHTTP_PATH:-/api/v1/files/upload}"
     local api_code
     if [ "$test_proxy" -eq 1 ]; then
-        api_code=$(curl -sk -X POST -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/api/v1/files/upload" 2>/dev/null || true)
+        api_code=$(curl -sk -X POST -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port${xhttp_route}" 2>/dev/null || true)
         if [ -z "$api_code" ] || [ "$api_code" = "000" ]; then api_code="401"; fi
     else
-        api_code=$(curl -sk -X POST -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/api/v1/files/upload" 2>/dev/null || true)
+        api_code=$(curl -sk -X POST -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port${xhttp_route}" 2>/dev/null || true)
     fi
-    echo -e "${GREEN}[✓] XHTTP Upload    -> HTTP ${api_code:-401} Unauthorized (Маршрут /api/v1/files/upload защищен)${NC}"
+    echo -e "${GREEN}[✓] XHTTP Upload    -> HTTP ${api_code:-401} Unauthorized (Маршрут ${xhttp_route} защищен)${NC}"
     echo -e "${CYAN}--------------------------------------------------------------------${NC}\n"
 }
 
@@ -1871,6 +1876,13 @@ install_selfsni() {
         log_info "PROXY Protocol ВЫКЛЮЧЕН (в Xray xver: 0)"
     fi
 
+    local xhttp_input=""
+    read -rp "Путь XHTTP для API-заглушки [по умолчанию: /api/v1/files/upload]: " xhttp_input || true
+    XHTTP_PATH="${xhttp_input:-/api/v1/files/upload}"
+    XHTTP_PATH=$(echo "$XHTTP_PATH" | tr -d '[:space:]')
+    [[ "$XHTTP_PATH" != /* ]] && XHTTP_PATH="/$XHTTP_PATH"
+    log_info "Защищенный маршрут XHTTP: $XHTTP_PATH"
+
     echo -e "\n${MAGENTA}ВЫБОР АРХИТЕКТУРЫ ШЛЮЗА ДЛЯ МАСКИРОВКИ:${NC}"
     echo -e "1) ${CYAN}[Случайно]${NC} 🎲 Автоматический выбор случайного шлюза (Рекомендуется)"
     echo -e "2) 🔒 Encrypted Cloud Vault (E2EE хранилище чанков, Send / ProtonDrive, /api/v1/files/upload)"
@@ -1901,6 +1913,36 @@ install_selfsni() {
     else
         ENABLE_PQC=0
         log_info "Постквантовая защита X25519MLKEM768: ВЫКЛЮЧЕНА (используется классический X25519)"
+    fi
+
+    echo -e "\n${MAGENTA}СЕТЕВАЯ ОПТИМИЗАЦИЯ И ЗАЩИТА НОДЫ REMNANODE (ANTI-TSPU):${NC}"
+    local bbr_init_input=""
+    read -rp "Включить оптимизацию сетевого стека ядра (TCP BBR + 16 MB QUIC/UDP буферы)? [Y/n, по умолчанию: Y]: " bbr_init_input || true
+    bbr_init_input="${bbr_init_input:-y}"
+    local want_bbr=0
+    if [[ "$bbr_init_input" =~ ^[Yy]$ ]]; then
+        want_bbr=1
+        log_info "Сетевой тюнинг ядра (BBR + QUIC): БУДЕТ ВКЛЮЧЕН"
+    else
+        log_info "Сетевой тюнинг ядра (BBR + QUIC): ПРОПУЩЕН"
+    fi
+
+    local shield_init_input=""
+    read -rp "Изолировать порт управления Remnanode фаерволом (доступ только с IP панели)? [y/N, по умолчанию: N]: " shield_init_input || true
+    shield_init_input="${shield_init_input:-n}"
+    local want_shield=0
+    if [[ "$shield_init_input" =~ ^[Yy]$ ]]; then
+        want_shield=1
+        log_info "Изоляция порта Remnanode: БУДЕТ НАСТРОЕНА"
+    fi
+
+    local certs_init_input=""
+    read -rp "Пробросить сертификаты /etc/letsencrypt в docker-compose.yml контейнера Remnanode? [y/N, по умолчанию: N]: " certs_init_input || true
+    certs_init_input="${certs_init_input:-n}"
+    local want_certs_link=0
+    if [[ "$certs_init_input" =~ ^[Yy]$ ]]; then
+        want_certs_link=1
+        log_info "Интеграция сертификатов с контейнером Remnanode: БУДЕТ НАСТРОЕНА"
     fi
 
     # Проверка DNS
@@ -1963,6 +2005,18 @@ install_selfsni() {
         install_oqs_provider --no-pause
     else
         configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "$WEB_ROOT"
+    fi
+
+    if [ "${want_bbr:-0}" -eq 1 ]; then
+        apply_network_hardening
+    fi
+
+    if [ "${want_shield:-0}" -eq 1 ]; then
+        isolate_remnanode_port || true
+    fi
+
+    if [ "${want_certs_link:-0}" -eq 1 ]; then
+        link_certs_to_remnanode || true
     fi
 
     systemctl enable nginx 2>/dev/null || true
