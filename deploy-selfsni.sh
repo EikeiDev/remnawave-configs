@@ -1185,6 +1185,23 @@ install_official_nginx() {
     log_ok "Установлен официальный движок Nginx Mainline: v${ng_ver}"
 }
 
+install_distro_nginx() {
+    check_root
+    log_info "Установка стандартного пакета Nginx из репозитория дистрибутива (Ubuntu / Debian)..."
+    if [ -f /etc/apt/sources.list.d/nginx.list ] || [ -f /etc/apt/preferences.d/99nginx ]; then
+        rm -f /etc/apt/sources.list.d/nginx.list /etc/apt/preferences.d/99nginx 2>/dev/null || true
+    fi
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx curl openssl sed python3
+    ensure_nginx_main_conf
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable nginx 2>/dev/null || true
+
+    local ng_ver
+    ng_ver=$(nginx -v 2>&1 | awk -F'/' '{print $2}' || echo "unknown")
+    log_ok "Установлен системный пакет Nginx: v${ng_ver}"
+}
+
 ensure_dummy_fallback_cert() {
     mkdir -p "$CONFIG_DIR"
     if [ ! -f "${CONFIG_DIR}/default_dummy.crt" ] || [ ! -f "${CONFIG_DIR}/default_dummy.key" ]; then
@@ -1866,6 +1883,26 @@ install_selfsni() {
     read -rp "Выберите вариант [1-6, по умолчанию: 1]: " theme_input || true
     theme_input="${theme_input:-1}"
 
+    echo -e "\n${MAGENTA}ВЫБОР ИСТОЧНИКА УСТАНОВКИ NGINX:${NC}"
+    echo -e "1) ${GREEN}[Рекомендуется] Репозиторий Nginx.org (Official Mainline)${NC}: Свежий движок Nginx (v1.27+)"
+    echo -e "2) ${BLUE}Репозиторий Ubuntu / Debian${NC}: Стандартный пакет дистрибутива"
+    local nginx_src_input=""
+    read -rp "Выберите источник Nginx [1-2, по умолчанию: 1]: " nginx_src_input || true
+    nginx_src_input="${nginx_src_input:-1}"
+
+    echo -e "\n${MAGENTA}ПОСТКВАНТОВАЯ КРИПТОГРАФИЯ TLS 1.3 (X25519MLKEM768):${NC}"
+    local pqc_init_input=""
+    read -rp "Включить постквантовый гибридный обмен X25519MLKEM768 (сборка OQS Provider)? [y/N, по умолчанию: N]: " pqc_init_input || true
+    pqc_init_input="${pqc_init_input:-n}"
+    local want_pqc=0
+    if [[ "$pqc_init_input" =~ ^[Yy]$ ]]; then
+        want_pqc=1
+        log_info "Постквантовая защита X25519MLKEM768: БУДЕТ УСТАНОВЛЕНА И ВКЛЮЧЕНА"
+    else
+        ENABLE_PQC=0
+        log_info "Постквантовая защита X25519MLKEM768: ВЫКЛЮЧЕНА (используется классический X25519)"
+    fi
+
     # Проверка DNS
     log_info "Проверка разрешения домена $DOMAIN..."
     local server_ipv4 resolved_ip
@@ -1891,8 +1928,12 @@ install_selfsni() {
         fi
     fi
 
-    # Установка пакетов (Official Nginx Mainline + Certbot)
-    install_official_nginx
+    # Установка пакетов (выбранный источник Nginx + Certbot)
+    if [ "$nginx_src_input" = "2" ]; then
+        install_distro_nginx
+    else
+        install_official_nginx
+    fi
 
     echo -e "\n${MAGENTA}ВЫБОР ЦЕНТРА СЕРТИФИКАЦИИ SSL (CA):${NC}"
     echo -e "1) ${GREEN}[Рекомендуется] Auto${NC}: Let's Encrypt (при сбое TCP/Connection Reset — авто-переход на ZeroSSL)"
@@ -1917,7 +1958,12 @@ install_selfsni() {
 
     WEB_ROOT="/var/www/$DOMAIN"
     generate_website "$DOMAIN" "$WEB_ROOT" "$theme_input"
-    configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "$WEB_ROOT"
+
+    if [ "${want_pqc:-0}" -eq 1 ]; then
+        install_oqs_provider --no-pause
+    else
+        configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "$WEB_ROOT"
+    fi
 
     systemctl enable nginx 2>/dev/null || true
     if ! systemctl is-active --quiet nginx 2>/dev/null; then
@@ -1952,6 +1998,7 @@ install_selfsni() {
     echo -e "Домен сайта:              ${CYAN}https://${DOMAIN}${NC}"
     echo -e "Локальный fallback Nginx: ${CYAN}127.0.0.1:${FALLBACK_PORT}${NC}"
     echo -e "PROXY Protocol (xver):    ${CYAN}$([ $USE_PROXY_FLAG -eq 1 ] && echo 'ВКЛЮЧЕН (xver: 1)' || echo 'ВЫКЛЮЧЕН (xver: 0)')${NC}"
+    echo -e "Постквант (PQC ML-KEM):   ${CYAN}$([ "${ENABLE_PQC:-0}" -eq 1 ] && echo 'ВКЛЮЧЕН (X25519MLKEM768)' || echo 'ВЫКЛЮЧЕН (X25519)')${NC}"
     echo -e "Управление сервером:      ${CYAN}selfsni${NC} (вводите в терминале)"
     echo -e "\n${YELLOW}В конфигурации Xray укажите в realitySettings:${NC}"
     cat << EOF
@@ -2251,10 +2298,13 @@ install_oqs_provider() {
         log_err "Не удалось инициализировать гибридную кривую в OpenSSL (доступно: $active_curves)."
         ENABLE_PQC=0
         save_config
+        configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
     fi
 
-    echo -e "\n${CYAN}Нажмите Enter для возврата...${NC}"
-    read -r || true
+    if [ "${1:-}" != "--no-pause" ]; then
+        echo -e "\n${CYAN}Нажмите Enter для возврата...${NC}"
+        read -r || true
+    fi
 }
 
 remove_oqs_provider() {
