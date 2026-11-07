@@ -80,7 +80,7 @@ EOF
 }
 
 # ==============================================================================
-# ФУНКЦИЯ ПРОЦЕДУРНОГО КОНСТРУКТОРА САЙТОВ-МАСКИРОВОК
+# ФУНКЦИЯ ПРОЦЕДУРНОГО КОНСТРУКТОРА ШЛЮЗОВ-МАСКИРОВОК (GATEWAYS & DECOY)
 # ==============================================================================
 generate_website() {
     local target_domain="$1"
@@ -88,25 +88,24 @@ generate_website() {
     local selected_archetype="${3:-1}"
 
     mkdir -p "$target_root/assets"
-    mkdir -p "$target_root/legal"
 
-    # Случайный выбор архетипа [1-4], если передан 1 или неверный
+    # Выбор архетипа шлюза [1-5]
     local arch_id
-    if [ "$selected_archetype" -eq 1 ] || [ "$selected_archetype" -lt 1 ] || [ "$selected_archetype" -gt 5 ]; then
-        arch_id=$(( (RANDOM % 4) + 1 ))
+    if [ "$selected_archetype" -eq 1 ] || [ "$selected_archetype" -lt 1 ] || [ "$selected_archetype" -gt 6 ]; then
+        arch_id=$(( (RANDOM % 5) + 1 ))
     else
-        # Преобразуем выбор пользователя (2->1, 3->2, 4->3, 5->4)
+        # Преобразуем выбор пользователя (2->1, 3->2, 4->3, 5->4, 6->5)
         arch_id=$(( selected_archetype - 1 ))
     fi
 
-    # 1. СЛУЧАЙНЫЕ ЦВЕТОВЫЕ ПАЛИТРЫ
+    # 1. ТЕХНОЛОГИЧНЫЕ ПАЛИТРЫ (ТЕМНЫЕ GLASSMORPHISM ИНТЕРФЕЙСЫ)
     local palettes=(
-      "#3b82f6|#1d4ed8|#070b14|#0d1527|rgba(59,130,246,0.25)|#60a5fa"   # Cyber Blue
-      "#10b981|#047857|#05120d|#0a1f17|rgba(16,185,129,0.25)|#34d399"   # Emerald Matrix
-      "#8b5cf6|#6d28d9|#0c0a1a|#16122e|rgba(139,92,246,0.25)|#a78bfa"   # Deep Violet
+      "#3b82f6|#1d4ed8|#070b14|#0d1527|rgba(59,130,246,0.25)|#60a5fa"   # Cyber Cobalt
+      "#10b981|#047857|#05120d|#0a1f17|rgba(16,185,129,0.25)|#34d399"   # Terminal Emerald
+      "#8b5cf6|#6d28d9|#0c0a1a|#16122e|rgba(139,92,246,0.25)|#a78bfa"   # Obsidian Purple
       "#06b6d4|#0e7490|#061118|#0b1e2a|rgba(6,182,212,0.25)|#22d3ee"   # Arctic Cyan
-      "#f59e0b|#b45309|#130e06|#22190b|rgba(245,158,11,0.25)|#fbbf24"   # Amber Gold
-      "#f43f5e|#be123c|#14070a|#240d13|rgba(244,63,94,0.25)|#fb7185"    # Crimson Red-Team
+      "#f59e0b|#b45309|#130e06|#22190b|rgba(245,158,11,0.25)|#fbbf24"   # Industrial Amber
+      "#64748b|#475569|#090d16|#0f172a|rgba(100,116,139,0.25)|#94a3b8"  # Monochromatic Slate
     )
     local chosen_palette=${palettes[$((RANDOM % ${#palettes[@]}))]}
     IFS='|' read -r ACCENT_COLOR ACCENT_HOVER BG_PRIMARY BG_SECONDARY ACCENT_GLOW ACCENT_LIGHT <<< "$chosen_palette"
@@ -115,253 +114,236 @@ generate_website() {
     local fonts=(
       "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif"
       "'Inter', -apple-system, BlinkMacSystemFont, sans-serif"
-      "'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace"
-      "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif"
+      "'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif"
+      "'JetBrains Mono', 'Fira Code', Consolas, monospace"
     )
     local FONT_FAMILY=${fonts[$((RANDOM % ${#fonts[@]}))]}
 
     # 3. СКРУГЛЕНИЯ
-    local radius_opts=("4px" "8px" "12px" "16px")
+    local radius_opts=("6px" "10px" "14px" "18px")
     local RADIUS=${radius_opts[$((RANDOM % ${#radius_opts[@]}))]}
 
-    # 4. НАЗВАНИЯ И МЕТАДАННЫЕ
-    local company_names=(
-      "Vanguard Systems Labs" "Aegis Zero-Trust Network" "Cortex Distributed AI"
-      "Synapse Tensor Cloud" "Axiom Ultra-Low Latency" "Chronos Execution Group"
-      "Orbit Transit Backbone" "Nexus Carrier Exchange" "Kore Infrastructure Corp"
-      "Prism Global Routing" "Apex Telemetry Defense" "Modular Matrix Works"
+    # 4. НАЗВАНИЯ ИНФРАСТРУКТУРНЫХ СЕРВИСОВ
+    local brand_names=(
+      "Aetheria Cloud Vault" "Nexus Zero-Trust Fabric" "Krypton Identity Perimeter"
+      "Stratos S3 Storage" "Hyperion Distributed Ingress" "Titan Private Cluster"
+      "Chronos Edge Relay" "Apex Telemetry Gateway" "Orbital Object Core"
+      "Synthetix Bastion Access" "Vanguard Enterprise Mesh" "Linearis Infrastructure"
     )
-    COMPANY_NAME=${company_names[$((RANDOM % ${#company_names[@]}))]}
+    COMPANY_NAME=${brand_names[$((RANDOM % ${#brand_names[@]}))]}
 
-    # Favicon
+    # Favicon (SVG)
     cat << EOF > "$target_root/favicon.svg"
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
   <rect width="32" height="32" rx="8" fill="${ACCENT_COLOR}"/>
-  <path d="M8 16L14 22L24 10" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M16 7L8 11V16C8 21.5 11.4 26.6 16 28C20.6 26.6 24 21.5 24 16V11L16 7Z" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
 EOF
 
-    # Общий интерактивный JS для всех archetypes
-    cat << 'EOF' > "$target_root/assets/app.js"
-document.addEventListener('DOMContentLoaded', () => {
-  // Копирование кода
-  document.querySelectorAll('.copy-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const targetId = btn.getAttribute('data-target');
-      const targetEl = document.getElementById(targetId);
-      if (targetEl) {
-        navigator.clipboard.writeText(targetEl.innerText.trim()).then(() => {
-          const orig = btn.innerText;
-          btn.innerText = 'Copied!';
-          setTimeout(() => { btn.innerText = orig; }, 2000);
-        });
-      }
-    });
-  });
-
-  // Аккордеон (Archetype 2)
-  document.querySelectorAll('.accordion-header').forEach(header => {
-    header.addEventListener('click', () => {
-      const item = header.parentElement;
-      const wasActive = item.classList.contains('active');
-      document.querySelectorAll('.accordion-item').forEach(i => i.classList.remove('active'));
-      if (!wasActive) item.classList.add('active');
-    });
-  });
-
-  // Табы бенчмарков (Archetype 4)
-  const tabData = {
-    fp8: { tps: "18,450", ttft: "5.4ms", fabric: "3.2 Tbps", util: "98.4%" },
-    bf16: { tps: "9,820", ttft: "11.2ms", fabric: "3.2 Tbps", util: "99.1%" },
-    kv: { tps: "24,100", ttft: "3.8ms", fabric: "3.2 Tbps", util: "94.6%" }
-  };
-  document.querySelectorAll('.bench-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.bench-tab').forEach(t => t.classList.remove('active'));
-      tab.classList.add('active');
-      const key = tab.getAttribute('data-bench');
-      if (tabData[key]) {
-        document.getElementById('bench-tps').innerText = tabData[key].tps;
-        document.getElementById('bench-ttft').innerText = tabData[key].ttft;
-        document.getElementById('bench-fabric').innerText = tabData[key].fabric;
-        document.getElementById('bench-util').innerText = tabData[key].util;
-      }
-    });
-  });
-
-  // Универсальная отправка форм на /api/v1/contact
-  const forms = document.querySelectorAll('form.ajax-form');
-  forms.forEach(form => {
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const btn = form.querySelector('button[type="submit"]');
-      const origText = btn.innerHTML;
-      btn.innerHTML = 'Transmitting to Gateway...';
-      btn.disabled = true;
-
-      const payload = {
-        name: form.name ? form.name.value : '',
-        email: form.email ? form.email.value : '',
-        scope: form.scope ? form.scope.value : 'General Inquiry',
-        notes: form.notes ? form.notes.value : '',
-        timestamp: Date.now()
-      };
-
-      try {
-        const res = await fetch('/api/v1/contact', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        btn.innerHTML = 'Transmission Confirmed';
-        btn.style.background = '#10b981';
-        alert('Technical Brief Received!\nReference Ticket: ' + (data.ticket || 'TKT-' + Math.floor(10000 + Math.random() * 90000)) + '\nStatus: Queued in Operations Center.');
-        form.reset();
-      } catch (err) {
-        btn.innerHTML = 'Brief Dispatched';
-        btn.style.background = '#10b981';
-        alert('Brief Dispatched. Reference ID: TKT-' + Math.floor(10000 + Math.random() * 90000));
-        form.reset();
-      } finally {
-        setTimeout(() => {
-          btn.innerHTML = origText;
-          btn.style.background = '';
-          btn.disabled = false;
-        }, 3500);
-      }
-    });
-  });
-});
-EOF
-
-    # Вызов конкретного генератора по архетипу с регистрацией метаданных
+    # 5. ГЕНЕРАЦИЯ ВЫБРАННОГО АРХЕТИПА ШЛЮЗА
     case $arch_id in
         1)
-            ARCHETYPE_NAME="DevOps Terminal & Bento Grid"
-            THEME_NAME="Cloud-Native Edge Infrastructure"
-            generate_archetype_terminal "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
+            ARCHETYPE_NAME="Encrypted Cloud Vault (File Drop)"
+            THEME_NAME="End-to-End Encrypted File Transfer Portal"
+            generate_gateway_vault "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
             ;;
         2)
-            ARCHETYPE_NAME="Modern SaaS & FinTech Engine"
-            THEME_NAME="Low-Latency Capital Routing"
-            generate_archetype_saas "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
+            ARCHETYPE_NAME="Zero-Trust Identity Gateway (SSO / WebAuthn)"
+            THEME_NAME="Enterprise Perimeter Authentication Portal"
+            generate_gateway_identity "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
             ;;
         3)
-            ARCHETYPE_NAME="Autonomous Cyber Defense SOC"
-            THEME_NAME="Zero-Trust Threat Neutralization"
-            generate_archetype_soc "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
+            ARCHETYPE_NAME="Private S3 Object Storage Gateway"
+            THEME_NAME="Restricted Ingress & Object Storage Console"
+            generate_gateway_s3 "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
             ;;
         4)
-            ARCHETYPE_NAME="Hyperscale Neural Fabric AI"
-            THEME_NAME="Distributed AI & Tensor Scaling"
-            generate_archetype_neural "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
+            ARCHETYPE_NAME="Edge CDN Mesh Relay & Node Telemetry"
+            THEME_NAME="Restricted Edge PoP & Anycast Transit Portal"
+            generate_gateway_mesh "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
+            ;;
+        5)
+            ARCHETYPE_NAME="Minimalist Dev Auth Portal"
+            THEME_NAME="Workspace Session Token & CLI Pairing"
+            generate_gateway_minimal "$target_domain" "$target_root" "$ACCENT_COLOR" "$ACCENT_HOVER" "$BG_PRIMARY" "$BG_SECONDARY" "$ACCENT_GLOW" "$ACCENT_LIGHT" "$FONT_FAMILY" "$RADIUS" "$COMPANY_NAME"
             ;;
     esac
 
-    # Стандартные файлы
+    # robots.txt (Защита приватной инфраструктуры от индексации поисковиками)
     cat << EOF > "$target_root/robots.txt"
 User-agent: *
-Allow: /
-Disallow: /api/
-Sitemap: https://${target_domain}/sitemap.xml
+Disallow: /
 EOF
 
-    cat << EOF > "$target_root/sitemap.xml"
-<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://${target_domain}/</loc></url>
-  <url><loc>https://${target_domain}/services.html</loc></url>
-  <url><loc>https://${target_domain}/about.html</loc></url>
-  <url><loc>https://${target_domain}/legal/privacy.html</loc></url>
-</urlset>
+    # Кастомная стилизованная страница 404 (в стиле защищенной инфраструктуры)
+    cat << EOF > "$target_root/404.html"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>404 - Protected Ingress Resource Not Found</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <style>
+    body { margin:0; background:${BG_PRIMARY}; color:#f8fafc; font-family:${FONT_FAMILY}; display:flex; align-items:center; justify-content:center; min-height:100vh; text-align:center; padding:1.5rem; }
+    .card { background:${BG_SECONDARY}; border:1px solid rgba(255,255,255,0.08); padding:2.5rem; border-radius:${RADIUS}; max-width:480px; box-shadow:0 20px 40px rgba(0,0,0,0.5); }
+    h1 { font-size:3.5rem; margin:0; color:${ACCENT_COLOR}; font-weight:800; }
+    h2 { font-size:1.25rem; margin:0.75rem 0 1rem; color:#e2e8f0; }
+    p { color:#94a3b8; font-size:0.9rem; line-height:1.6; margin-bottom:1.5rem; }
+    .btn { display:inline-block; background:${ACCENT_COLOR}; color:#fff; padding:0.65rem 1.5rem; border-radius:${RADIUS}; text-decoration:none; font-weight:600; font-size:0.875rem; transition:0.2s; }
+    .btn:hover { background:${ACCENT_HOVER}; }
+    .ref { font-family:monospace; font-size:0.75rem; color:#64748b; margin-top:1.5rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>404</h1>
+    <h2>Protected Ingress Resource Not Found</h2>
+    <p>The requested endpoint does not exist on this cluster, or your session access token has expired.</p>
+    <a href="/" class="btn">Return to Gateway Ingress</a>
+    <div class="ref">Endpoint: ${target_domain} • Core Code: ERR_ROUTE_NOT_FOUND</div>
+  </div>
+</body>
+</html>
 EOF
 
-    log_ok "Сайт успешно сгенерирован (Стиль: $ARCHETYPE_NAME, Бренд: $COMPANY_NAME)!"
+    log_ok "Шлюз-маскировка успешно сгенерирован (Стиль: $ARCHETYPE_NAME, Бренд: $COMPANY_NAME)!"
 }
 
 # ------------------------------------------------------------------------------
-# ARCHETYPE 1: CLOUD NATIVE & DEVOPS TERMINAL (Bento Grid + Live Shell)
+# АРХЕТИП 1: ENCRYPTED CLOUD VAULT & CHUNKED FILE DROP (ProtonDrive / Send Style)
 # ------------------------------------------------------------------------------
-generate_archetype_terminal() {
+generate_gateway_vault() {
     local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
+    mkdir -p "$root/assets"
 
     cat << EOF > "$root/assets/style.css"
 :root {
   --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
-  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.02);
-  --border: rgba(255,255,255,0.09); --txt: #f8fafc; --muted: #94a3b8;
-  --font: ${font}; --rad: ${rad};
+  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.03);
+  --border: rgba(255,255,255,0.08); --border-h: rgba(255,255,255,0.18);
+  --txt: #f8fafc; --muted: #94a3b8; --font: ${font}; --rad: ${rad};
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; }
-a { color: inherit; text-decoration: none; }
-.container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
-header { border-bottom: 1px solid var(--border); background: rgba(7,11,20,0.85); backdrop-filter: blur(14px); position: sticky; top:0; z-index:100; }
-.nav-row { display: flex; align-items: center; justify-content: space-between; height: 4.25rem; }
-.logo { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.15rem; }
-.logo-badge { background: var(--acc); color:#fff; padding: 0.2rem 0.5rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; }
-.nav-links { display: flex; gap: 1.75rem; list-style: none; font-size: 0.9rem; }
-.nav-links a:hover, .nav-links a.active { color: var(--acc-l); }
-.status-pill { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.65rem; border-radius: 999px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); font-size: 0.8rem; color: #10b981; }
-.status-dot { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 6px #10b981; }
-.btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.6rem 1.25rem; border-radius: var(--rad); font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.2s; border: none; }
-.btn-primary { background: var(--acc); color: #fff; box-shadow: 0 4px 12px var(--glow); }
+body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; min-height: 100vh; display: flex; flex-direction: column; }
+.container { max-width: 860px; margin: 0 auto; padding: 0 1.25rem; width: 100%; }
+header { padding: 1.5rem 0; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.2); backdrop-filter: blur(12px); }
+.header-row { display: flex; align-items: center; justify-content: space-between; }
+.logo-box { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; font-size: 1.15rem; }
+.badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.25); }
+.badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #10b981; box-shadow: 0 0 6px #10b981; }
+main { flex: 1; padding: 3rem 0; }
+.vault-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.25rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); backdrop-filter: blur(16px); position: relative; overflow: hidden; }
+.vault-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, transparent, var(--acc), transparent); }
+.title-area { margin-bottom: 1.75rem; }
+.title-area h1 { font-size: 1.85rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+.title-area p { color: var(--muted); font-size: 0.95rem; }
+.specs-bar { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; padding: 1rem; background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--rad); margin-bottom: 1.75rem; font-size: 0.825rem; }
+.spec-item { display: flex; flex-direction: column; gap: 0.2rem; }
+.spec-label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.spec-val { font-family: monospace; font-weight: 600; color: var(--acc-l); }
+.dropzone { border: 2px dashed var(--border); border-radius: var(--rad); padding: 2.5rem 1.5rem; text-align: center; cursor: pointer; transition: 0.2s ease; background: rgba(0,0,0,0.15); margin-bottom: 1.5rem; }
+.dropzone:hover, .dropzone.dragover { border-color: var(--acc); background: rgba(255,255,255,0.02); box-shadow: 0 0 20px var(--glow); }
+.drop-icon { width: 44px; height: 44px; margin: 0 auto 1rem; color: var(--acc); }
+.dropzone h3 { font-size: 1.05rem; margin-bottom: 0.35rem; }
+.dropzone p { color: var(--muted); font-size: 0.825rem; }
+.file-list { margin-bottom: 1.5rem; display: flex; flex-direction: column; gap: 0.65rem; }
+.file-item { display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: var(--card-bg); border: 1px solid var(--border); border-radius: calc(var(--rad) - 2px); font-size: 0.85rem; }
+.file-meta { display: flex; align-items: center; gap: 0.65rem; }
+.file-status { font-family: monospace; font-size: 0.75rem; color: var(--acc-l); background: rgba(255,255,255,0.05); padding: 0.2rem 0.5rem; border-radius: 4px; }
+.input-row { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1.5rem; }
+.input-row label { font-size: 0.825rem; color: var(--muted); font-weight: 500; }
+.input-group { position: relative; display: flex; align-items: center; }
+.input-group input { width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.75rem 2.75rem 0.75rem 1rem; color: #fff; font-family: var(--font); font-size: 0.9rem; transition: 0.2s; }
+.input-group input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 10px var(--glow); }
+.toggle-btn { position: absolute; right: 0.75rem; background: none; border: none; color: var(--muted); cursor: pointer; padding: 0.25rem; }
+.toggle-btn:hover { color: #fff; }
+.btn-primary { width: 100%; background: var(--acc); color: #fff; border: none; border-radius: var(--rad); padding: 0.85rem; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
 .btn-primary:hover { background: var(--acc-h); }
-.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--txt); }
-.btn-outline:hover { background: rgba(255,255,255,0.05); }
+.banner { margin-top: 1.25rem; padding: 0.85rem 1rem; border-radius: var(--rad); font-size: 0.85rem; display: none; align-items: flex-start; gap: 0.65rem; line-height: 1.5; }
+.banner-err { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5; }
+.banner-icon { width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px; }
+.curl-box { margin-top: 1.75rem; padding: 1rem; background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: var(--rad); }
+.curl-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+.copy-btn { background: rgba(255,255,255,0.08); border: none; color: #fff; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
+.copy-btn:hover { background: rgba(255,255,255,0.15); }
+.code-block { font-family: monospace; font-size: 0.8rem; color: #e2e8f0; word-break: break-all; }
+footer { border-top: 1px solid var(--border); padding: 1.5rem 0; font-size: 0.785rem; color: var(--muted); text-align: center; }
+@media (max-width: 640px) { .specs-bar { grid-template-columns: 1fr; } }
+EOF
 
-/* Split Hero */
-.hero-split { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 3rem; align-items: center; padding: 5rem 0 3.5rem; }
-.hero-split h1 { font-size: 2.85rem; font-weight: 800; line-height: 1.18; margin-bottom: 1.2rem; letter-spacing: -0.02em; }
-.hero-split p { font-size: 1.1rem; color: var(--muted); margin-bottom: 1.75rem; }
-.cli-box { display: flex; align-items: center; justify-content: space-between; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.75rem 1rem; font-family: monospace; font-size: 0.85rem; margin-bottom: 1.5rem; }
-.cli-box span { color: var(--acc-l); }
-.copy-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: #fff; padding: 0.3rem 0.6rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
+    cat << EOF > "$root/assets/app.js"
+document.addEventListener('DOMContentLoaded', () => {
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const fileList = document.getElementById('fileList');
+  const passInput = document.getElementById('passphrase');
+  const togglePass = document.getElementById('togglePass');
+  const submitBtn = document.getElementById('submitBtn');
+  const errBanner = document.getElementById('errBanner');
+  const copyBtn = document.getElementById('copyBtn');
 
-/* Live Terminal */
-.terminal-window { background: #030712; border: 1px solid var(--border); border-radius: var(--rad); box-shadow: 0 20px 40px rgba(0,0,0,0.6); overflow: hidden; font-family: monospace; }
-.term-header { background: #0b1120; padding: 0.6rem 1rem; display: flex; align-items: center; gap: 0.4rem; border-bottom: 1px solid var(--border); }
-.term-dot { width: 10px; height: 10px; border-radius: 50%; }
-.term-dot.r { background: #ef4444; } .term-dot.y { background: #f59e0b; } .term-dot.g { background: #10b981; }
-.term-title { margin-left: 0.5rem; font-size: 0.75rem; color: var(--muted); }
-.term-body { padding: 1.25rem; font-size: 0.85rem; line-height: 1.6; color: #cbd5e1; }
-.term-body .c-acc { color: var(--acc-l); }
-.term-body .c-green { color: #10b981; }
-.term-body .c-muted { color: #64748b; }
+  if (togglePass && passInput) {
+    togglePass.addEventListener('click', () => {
+      const type = passInput.getAttribute('type') === 'password' ? 'text' : 'password';
+      passInput.setAttribute('type', type);
+    });
+  }
 
-/* Bento Grid */
-.section-title { margin-bottom: 2.5rem; }
-.section-title h2 { font-size: 2rem; font-weight: 700; }
-.section-title p { color: var(--muted); }
-.bento-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-bottom: 5rem; }
-.bento-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 1.75rem; transition: 0.25s; }
-.bento-card:hover { border-color: var(--acc); transform: translateY(-2px); }
-.bento-card.col-2 { grid-column: span 2; }
-.bento-card h3 { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem; }
-.bento-card p { font-size: 0.9rem; color: var(--muted); }
+  if (dropzone && fileInput) {
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length > 0) handleFiles(e.dataTransfer.files);
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length > 0) handleFiles(fileInput.files);
+    });
+  }
 
-/* Latency Table */
-.ping-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; font-family: monospace; }
-.ping-table td { padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
-.ping-table td:last-child { text-align: right; color: #10b981; }
+  function handleFiles(files) {
+    Array.from(files).forEach(f => {
+      const div = document.createElement('div');
+      div.className = 'file-item';
+      div.innerHTML = \`
+        <div class="file-meta">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+          <span>\${f.name}</span>
+          <span style="color:var(--muted); font-size:0.75rem;">(\${(f.size / (1024*1024)).toFixed(2)} MB)</span>
+        </div>
+        <span class="file-status">STAGED • 64MB CHUNKS</span>
+      \`;
+      fileList.prepend(div);
+    });
+  }
 
-/* Form */
-.form-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.5rem; max-width: 680px; margin: 0 auto 5rem; }
-.form-group { margin-bottom: 1.25rem; }
-.form-group label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
-.form-input { width: 100%; background: var(--bg1); border: 1px solid var(--border); padding: 0.75rem 1rem; border-radius: var(--rad); color: #fff; font-family: inherit; font-size: 0.9rem; }
-.form-input:focus { outline: none; border-color: var(--acc); }
+  if (submitBtn) {
+    submitBtn.addEventListener('click', () => {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<span style="display:inline-block; animation:spin 1s linear infinite;">⟳</span> Initializing Ingress Handshake...';
+      errBanner.style.display = 'none';
 
-footer { border-top: 1px solid var(--border); padding: 3rem 0 2rem; color: var(--muted); font-size: 0.85rem; }
-.foot-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 2rem; margin-bottom: 2rem; }
-@media (max-width: 868px) {
-  .hero-split { grid-template-columns: 1fr; }
-  .bento-grid { grid-template-columns: 1fr; }
-  .bento-card.col-2 { grid-column: span 1; }
-  .foot-grid { grid-template-columns: 1fr; }
-  .nav-links { display: none; }
-}
+      setTimeout(() => {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = 'Stream Payload to Mesh';
+        errBanner.style.display = 'flex';
+      }, 1200);
+    });
+  }
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      const code = document.getElementById('curlCode').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        copyBtn.innerText = 'Copied!';
+        setTimeout(() => copyBtn.innerText = 'Copy', 2000);
+      });
+    });
+  }
+});
 EOF
 
     cat << EOF > "$root/index.html"
@@ -370,793 +352,523 @@ EOF
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${comp} | Cloud Native Mesh & Ephemeral Edge Infrastructure</title>
+  <title>${comp} | Encrypted Ingress Vault</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/assets/style.css">
+  <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
 </head>
 <body>
   <header>
-    <div class="container nav-row">
-      <div class="logo">
-        <span class="logo-badge">&gt;_</span>
+    <div class="container header-row">
+      <div class="logo-box">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${acc}" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="11" r="2"/></svg>
         <span>${comp}</span>
       </div>
-      <ul class="nav-links">
-        <li><a href="/" class="active">Platform</a></li>
-        <li><a href="/services.html">Edge Nodes</a></li>
-        <li><a href="/about.html">Architecture</a></li>
-        <li><a href="/legal/privacy.html">Compliance</a></li>
-      </ul>
-      <div style="display:flex; align-items:center; gap:1rem;">
-        <span class="status-pill"><span class="status-dot"></span> PoP: Online</span>
-        <a href="#deploy" class="btn btn-primary">CLI Ingress</a>
+      <div class="badge">
+        <span class="badge-dot"></span>
+        <span>E2EE Ingress Active</span>
       </div>
     </div>
   </header>
 
-  <main class="container">
-    <section class="hero-split">
-      <div>
-        <div style="margin-bottom:1rem;">
-          <span style="font-family:monospace; font-size:0.85rem; color:var(--acc-l);">// CLOUD-NATIVE DEPLOYMENT RUNTIME</span>
+  <main>
+    <div class="container">
+      <div class="vault-card">
+        <div class="title-area">
+          <h1>Encrypted File Ingress & Vault</h1>
+          <p>Restricted payload staging enclave. Files are split into volatile memory chunks and routed directly through TLS 1.3 encrypted mesh nodes.</p>
         </div>
-        <h1>Deterministic Low-Latency Edge Orchestration</h1>
-        <p>Declarative ephemeral node scheduling across international carrier PoPs with line-rate packet pacing and zero persistent state storage.</p>
-        
+
+        <div class="specs-bar">
+          <div class="spec-item">
+            <span class="spec-label">Ingress Route</span>
+            <span class="spec-val">/api/v1/files/upload</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Stream Chunking</span>
+            <span class="spec-val">64 MB Multipart RFC-7578</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Retention Policy</span>
+            <span class="spec-val">Ephemeral (RAM Scrubbed)</span>
+          </div>
+        </div>
+
+        <input type="file" id="fileInput" multiple style="display:none;">
+        <div class="dropzone" id="dropzone">
+          <svg class="drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <h3>Drag and drop encrypted payload chunks</h3>
+          <p>Click to browse local filesystem • Maximum stream: 20 GB • Supported: .enc, .bin, .tar.zst</p>
+        </div>
+
+        <div class="file-list" id="fileList">
+          <div class="file-item">
+            <div class="file-meta">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <span>telemetry_stream_enclave.zst</span>
+              <span style="color:var(--muted); font-size:0.75rem;">(128.4 MB)</span>
+            </div>
+            <span class="file-status">SYNCED • RAM ONLY</span>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <label for="passphrase">Vault Ingress Key or Mutual Authorization Token</label>
+          <div class="input-group">
+            <input type="password" id="passphrase" placeholder="vlt_sec_live_..." autocomplete="off">
+            <button type="button" class="toggle-btn" id="togglePass">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="button" class="btn-primary" id="submitBtn">Stream Payload to Mesh</button>
+
+        <div class="banner banner-err" id="errBanner">
+          <svg class="banner-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div>
+            <strong>Authorization Refused (HTTP 401)</strong><br>
+            Invalid or missing client token signature for multipart chunk staging on <code>/api/v1/files/upload</code>. Ensure bearer authorization matches cluster ingress keys.
+          </div>
+        </div>
+
+        <div class="curl-box">
+          <div class="curl-header">
+            <span>AUTOMATED SCRIPT INGRESS (CURL)</span>
+            <button class="copy-btn" id="copyBtn">Copy</button>
+          </div>
+          <div class="code-block" id="curlCode">curl -s -X POST https://${domain}/api/v1/files/upload -H "Authorization: Bearer \$VAULT_TOKEN" -F "chunk=@data.bin"</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="container">
+      Endpoint: ${domain} • Ingress Protocol: TLS 1.3 / XHTTP • Node Cluster State: Operational
+    </div>
+  </footer>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# АРХЕТИП 2: ZERO-TRUST IDENTITY & ACCESS MANAGEMENT (SSO / WebAuthn / FIDO2)
+# ------------------------------------------------------------------------------
+generate_gateway_identity() {
+    local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
+    mkdir -p "$root/assets"
+
+    cat << EOF > "$root/assets/style.css"
+:root {
+  --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
+  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.03);
+  --border: rgba(255,255,255,0.08); --border-h: rgba(255,255,255,0.18);
+  --txt: #f8fafc; --muted: #94a3b8; --font: ${font}; --rad: ${rad};
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.5rem; }
+.auth-box { width: 100%; max-width: 460px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.5rem 2rem; box-shadow: 0 25px 60px -15px rgba(0,0,0,0.6); backdrop-filter: blur(20px); position: relative; }
+.auth-box::before { content:''; position: absolute; top:0; left:20%; right:20%; height:2px; background: linear-gradient(90deg, transparent, var(--acc), transparent); }
+.brand-head { text-align: center; margin-bottom: 2rem; }
+.logo-icon { width: 44px; height: 44px; margin: 0 auto 0.75rem; color: var(--acc); filter: drop-shadow(0 0 10px var(--glow)); }
+.brand-head h1 { font-size: 1.45rem; font-weight: 700; margin-bottom: 0.35rem; }
+.brand-head p { font-size: 0.85rem; color: var(--muted); }
+.tabs { display: flex; gap: 0.5rem; background: rgba(0,0,0,0.3); padding: 0.25rem; border-radius: calc(var(--rad) - 2px); margin-bottom: 1.75rem; border: 1px solid var(--border); }
+.tab-btn { flex: 1; background: none; border: none; color: var(--muted); padding: 0.55rem; font-size: 0.825rem; font-weight: 600; border-radius: calc(var(--rad) - 4px); cursor: pointer; transition: 0.2s; }
+.tab-btn.active { background: var(--acc); color: #fff; box-shadow: 0 2px 8px var(--glow); }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+.fido-box { text-align: center; padding: 1.5rem 1rem; border: 1px dashed var(--border); border-radius: var(--rad); margin-bottom: 1.5rem; background: rgba(255,255,255,0.01); }
+.fido-icon { width: 48px; height: 48px; margin: 0 auto 0.85rem; color: var(--acc); animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { transform: scale(1); opacity: 0.8; } 50% { transform: scale(1.08); opacity: 1; } }
+.fido-box h3 { font-size: 1rem; margin-bottom: 0.35rem; }
+.fido-box p { font-size: 0.8rem; color: var(--muted); margin-bottom: 1.25rem; }
+.form-group { display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 1.25rem; }
+.form-group label { font-size: 0.8rem; color: var(--muted); font-weight: 500; }
+.form-group input { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.75rem 1rem; color: #fff; font-size: 0.9rem; font-family: var(--font); }
+.form-group input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 10px var(--glow); }
+.btn-submit { width: 100%; background: var(--acc); color: #fff; border: none; border-radius: var(--rad); padding: 0.85rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
+.btn-submit:hover { background: var(--acc-h); }
+.alert-box { margin-top: 1.25rem; padding: 0.75rem 0.85rem; border-radius: var(--rad); font-size: 0.8rem; line-height: 1.4; display: none; align-items: flex-start; gap: 0.5rem; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5; }
+.posture-footer { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--border); font-size: 0.75rem; color: var(--muted); display: flex; flex-direction: column; gap: 0.35rem; }
+.posture-item { display: flex; justify-content: space-between; }
+.posture-val { font-family: monospace; color: var(--acc-l); }
+EOF
+
+    cat << EOF > "$root/assets/app.js"
+document.addEventListener('DOMContentLoaded', () => {
+  const tabs = document.querySelectorAll('.tab-btn');
+  const panes = document.querySelectorAll('.tab-pane');
+  const fidoBtn = document.getElementById('fidoBtn');
+  const ssoBtn = document.getElementById('ssoBtn');
+  const alertBox = document.getElementById('alertBox');
+
+  tabs.forEach(tab => {
+    tab.addEventListener('click', () => {
+      tabs.forEach(t => t.classList.remove('active'));
+      panes.forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById(tab.dataset.target).classList.add('active');
+      alertBox.style.display = 'none';
+    });
+  });
+
+  function triggerAuthError(btn, text, defaultText) {
+    btn.disabled = true;
+    btn.innerHTML = '<span style="display:inline-block; animation:spin 1s linear infinite;">⟳</span> Handshaking...';
+    alertBox.style.display = 'none';
+
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.innerHTML = defaultText;
+      alertBox.innerHTML = text;
+      alertBox.style.display = 'flex';
+    }, 1100);
+  }
+
+  if (fidoBtn) {
+    fidoBtn.addEventListener('click', () => {
+      triggerAuthError(
+        fidoBtn,
+        '<div><strong>WebAuthn Error (401)</strong><br>Hardware security key attestation missing or denied. Untrusted device posture for route <code>/api/v1/files/upload</code>.</div>',
+        'Verify Security Key'
+      );
+    });
+  }
+
+  if (ssoBtn) {
+    ssoBtn.addEventListener('click', () => {
+      triggerAuthError(
+        ssoBtn,
+        '<div><strong>Access Denied (401)</strong><br>Invalid enterprise SSO credentials. Ingress route <code>/api/v1/files/upload</code> requires valid corporate mutual certificate.</div>',
+        'Sign In with Perimeter SSO'
+      );
+    });
+  }
+});
+EOF
+
+    cat << EOF > "$root/index.html"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${comp} | Zero-Trust Perimeter Gateway</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/assets/style.css">
+  <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+</head>
+<body>
+  <div class="auth-box">
+    <div class="brand-head">
+      <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <h1>${comp}</h1>
+      <p>Zero-Trust Identity & Perimeter Gateway</p>
+    </div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-target="paneFido">Security Key (FIDO2)</button>
+      <button class="tab-btn" data-target="paneSso">Corporate SSO</button>
+    </div>
+
+    <div class="tab-pane active" id="paneFido">
+      <div class="fido-box">
+        <svg class="fido-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zM9 7a3 3 0 0 1 6 0v3H9V7z"/></svg>
+        <h3>Hardware Authenticator</h3>
+        <p>Touch your YubiKey or passkey to establish a cryptographically bound mutual TLS tunnel.</p>
+        <button type="button" class="btn-submit" id="fidoBtn">Verify Security Key</button>
+      </div>
+    </div>
+
+    <div class="tab-pane" id="paneSso">
+      <div class="form-group">
+        <label for="corpUser">Enterprise Email or Service Account</label>
+        <input type="text" id="corpUser" placeholder="ops-admin@${domain}" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label for="corpPass">Session Token / Gateway Passphrase</label>
+        <input type="password" id="corpPass" placeholder="••••••••••••" autocomplete="off">
+      </div>
+      <button type="button" class="btn-submit" id="ssoBtn">Sign In with Perimeter SSO</button>
+    </div>
+
+    <div class="alert-box" id="alertBox"></div>
+
+    <div class="posture-footer">
+      <div class="posture-item">
+        <span>Protected Endpoint:</span>
+        <span class="posture-val">/api/v1/files/upload</span>
+      </div>
+      <div class="posture-item">
+        <span>Cipher Negotiation:</span>
+        <span class="posture-val">TLS 1.3 Strict</span>
+      </div>
+      <div class="posture-item">
+        <span>Enclave Posture:</span>
+        <span class="posture-val">ZTNA Verified</span>
+      </div>
+    </div>
+  </div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# АРХЕТИП 3: PRIVATE S3 OBJECT STORAGE CONSOLE (MinIO / Ceph Ingress Console)
+# ------------------------------------------------------------------------------
+generate_gateway_s3() {
+    local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
+    mkdir -p "$root/assets"
+
+    cat << EOF > "$root/assets/style.css"
+:root {
+  --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
+  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.03);
+  --border: rgba(255,255,255,0.08); --border-h: rgba(255,255,255,0.18);
+  --txt: #f8fafc; --muted: #94a3b8; --font: ${font}; --rad: ${rad};
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; min-height: 100vh; display: flex; flex-direction: column; }
+.container { max-width: 1080px; margin: 0 auto; padding: 0 1.25rem; width: 100%; }
+header { padding: 1.25rem 0; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.25); backdrop-filter: blur(12px); }
+.header-row { display: flex; align-items: center; justify-content: space-between; }
+.brand { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; font-size: 1.15rem; }
+.brand svg { color: var(--acc); }
+.status-pill { display: flex; align-items: center; gap: 0.45rem; font-size: 0.785rem; font-family: monospace; background: rgba(16,185,129,0.1); color: #34d399; border: 1px solid rgba(16,185,129,0.25); padding: 0.25rem 0.65rem; border-radius: 999px; }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: #10b981; }
+main { flex: 1; padding: 2.5rem 0; }
+.grid-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start; }
+.panel { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2rem; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
+.panel h2 { font-size: 1.35rem; margin-bottom: 0.5rem; }
+.panel p { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+.form-field { display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 1.15rem; }
+.form-field label { font-size: 0.8rem; color: var(--muted); font-weight: 500; }
+.form-field input { background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.75rem 1rem; color: #fff; font-size: 0.875rem; font-family: monospace; }
+.form-field input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 10px var(--glow); }
+.btn-connect { width: 100%; background: var(--acc); color: #fff; border: none; border-radius: var(--rad); padding: 0.85rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.2s; margin-top: 0.5rem; }
+.btn-connect:hover { background: var(--acc-h); }
+.err-box { margin-top: 1.25rem; padding: 0.75rem; border-radius: var(--rad); font-size: 0.8rem; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5; display: none; }
+.metric-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1.5rem; }
+.metric-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.85rem; text-align: center; }
+.metric-val { font-size: 1.15rem; font-weight: 700; color: var(--acc-l); font-family: monospace; }
+.metric-lbl { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; margin-top: 0.2rem; }
+.cli-box { background: rgba(0,0,0,0.4); border: 1px solid var(--border); border-radius: var(--rad); padding: 1.15rem; }
+.cli-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+.copy-pill { background: rgba(255,255,255,0.08); border: none; color: #fff; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; }
+.cli-code { font-family: monospace; font-size: 0.8rem; color: #cbd5e1; word-break: break-all; }
+footer { border-top: 1px solid var(--border); padding: 1.25rem 0; font-size: 0.785rem; color: var(--muted); text-align: center; }
+@media (max-width: 820px) { .grid-layout { grid-template-columns: 1fr; } }
+EOF
+
+    cat << EOF > "$root/assets/app.js"
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('connectBtn');
+  const err = document.getElementById('errBox');
+  const copyBtn = document.getElementById('copyBtn');
+
+  if (btn) {
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.innerHTML = '<span style="display:inline-block; animation:spin 1s linear infinite;">⟳</span> Validating SigV4 Signature...';
+      err.style.display = 'none';
+
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = 'Connect to Storage Cluster';
+        err.innerHTML = '<strong>SignatureDoesNotMatch (403)</strong><br>The request signature calculated does not match the signature provided. Ingress upload route <code>/api/v1/files/upload</code> requires valid AWS4-HMAC-SHA256 signature.';
+        err.style.display = 'block';
+      }, 1100);
+    });
+  }
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      const code = document.getElementById('cliCode').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        copyBtn.innerText = 'Copied!';
+        setTimeout(() => copyBtn.innerText = 'Copy', 2000);
+      });
+    });
+  }
+});
+EOF
+
+    cat << EOF > "$root/index.html"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${comp} | S3 Object Storage Gateway</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/assets/style.css">
+  <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
+</head>
+<body>
+  <header>
+    <div class="container header-row">
+      <div class="brand">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+        <span>${comp} S3 Ingress</span>
+      </div>
+      <div class="status-pill">
+        <span class="status-dot"></span>
+        <span>CLUSTER HEALTH: OPTIMAL</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="container grid-layout">
+      <div class="panel">
+        <h2>Access Ingress Console</h2>
+        <p>Authenticate with S3 Access Key credentials to manage staged buckets and chunk buffers.</p>
+
+        <div class="form-field">
+          <label for="akid">S3 Access Key ID</label>
+          <input type="text" id="akid" placeholder="AKIA_INGRESS_..." autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label for="sak">Secret Access Key</label>
+          <input type="password" id="sak" placeholder="••••••••••••••••••••" autocomplete="off">
+        </div>
+        <div class="form-field">
+          <label for="bkt">Target Bucket Prefix</label>
+          <input type="text" id="bkt" value="ephemeral-stream-staging" readonly>
+        </div>
+
+        <button type="button" class="btn-connect" id="connectBtn">Connect to Storage Cluster</button>
+        <div class="err-box" id="errBox"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Cluster Endpoint & Telemetry</h2>
+        <p>Real-time cluster ingress metrics and programmatic upload configuration.</p>
+
+        <div class="metric-row">
+          <div class="metric-card">
+            <div class="metric-val">1.2ms</div>
+            <div class="metric-lbl">IOPS Latency</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-val">100%</div>
+            <div class="metric-lbl">Node Health</div>
+          </div>
+          <div class="metric-card">
+            <div class="metric-val">64 MB</div>
+            <div class="metric-lbl">Chunk Buffer</div>
+          </div>
+        </div>
+
         <div class="cli-box">
-          <code>curl -fsSL https://${domain}/install.sh | bash</code>
-          <button class="copy-btn" data-target="cli-cmd">Copy</button>
-        </div>
-        <span id="cli-cmd" style="display:none;">curl -fsSL https://${domain}/install.sh | bash</span>
-
-        <div style="display:flex; gap:1rem;">
-          <a href="#deploy" class="btn btn-primary">Request Access Token</a>
-          <a href="/services.html" class="btn btn-outline">Node Telemetry</a>
-        </div>
-      </div>
-
-      <div>
-        <div class="terminal-window">
-          <div class="term-header">
-            <span class="term-dot r"></span>
-            <span class="term-dot y"></span>
-            <span class="term-dot g"></span>
-            <span class="term-title">edge-gateway-daemon --live</span>
+          <div class="cli-header">
+            <span>RCLONE / AWS CLI ENDPOINT CONFIG</span>
+            <button class="copy-pill" id="copyBtn">Copy</button>
           </div>
-          <div class="term-body">
-            <p><span class="c-muted">02:14:08</span> <span class="c-acc">[init]</span> Spawning kernel bypass listener on 0.0.0.0:443...</p>
-            <p><span class="c-muted">02:14:09</span> <span class="c-acc">[tls]</span> TLS 1.3 negotiated: CHACHA20-POLY1305 (0-RTT)</p>
-            <p><span class="c-muted">02:14:10</span> <span class="c-green">[sync]</span> 32 global nodes connected to anycast fabric</p>
-            <p><span class="c-muted">02:14:11</span> <span class="c-acc">[pacing]</span> Jitter window stabilized: 100-1400 B envelope</p>
-            <p><span class="c-muted">02:14:12</span> <span class="c-green">[ready]</span> Edge node operational. Jitter &lt; 0.4ms</p>
-          </div>
+          <div class="cli-code" id="cliCode">aws s3 cp payload.bin s3://ephemeral-stream-staging/ --endpoint-url https://${domain}/api/v1/files/upload</div>
         </div>
-      </div>
-    </section>
-
-    <section class="section-title">
-      <h2>Asymmetric Edge Topology</h2>
-      <p>Continuous packet auditing without user session payload retention.</p>
-    </section>
-
-    <div class="bento-grid">
-      <div class="bento-card col-2">
-        <span style="color:var(--acc-l); font-size:0.8rem; font-family:monospace;">MODULE: RUNTIME_PACING</span>
-        <h3>Zero-Jitter Kernel Packet Pacing (eBPF / XHTTP)</h3>
-        <p>Custom socket options stripping operating system context overhead, smoothing packet histograms to resist anomalous traffic classification.</p>
-        <div style="margin-top:1.5rem; display:flex; gap:2rem; font-size:0.85rem;">
-          <div><strong style="color:#fff; font-size:1.4rem;">&lt; 0.8ms</strong><br><span style="color:var(--muted);">Dispatch Jitter</span></div>
-          <div><strong style="color:#fff; font-size:1.4rem;">99.999%</strong><br><span style="color:var(--muted);">Delivery Envelope</span></div>
-          <div><strong style="color:#fff; font-size:1.4rem;">0 B</strong><br><span style="color:var(--muted);">Logged Payloads</span></div>
-        </div>
-      </div>
-
-      <div class="bento-card">
-        <span style="color:var(--acc-l); font-size:0.8rem; font-family:monospace;">TELEMETRY: PING</span>
-        <h3>Edge Node Latencies</h3>
-        <table class="ping-table">
-          <tr><td>Frankfurt (FRA-1)</td><td>12ms</td></tr>
-          <tr><td>Amsterdam (AMS-2)</td><td>16ms</td></tr>
-          <tr><td>New York (NYC-1)</td><td>38ms</td></tr>
-          <tr><td>Singapore (SIN-1)</td><td>64ms</td></tr>
-        </table>
-      </div>
-
-      <div class="bento-card">
-        <span style="color:var(--acc-l); font-size:0.8rem; font-family:monospace;">SECURITY: ISOLATION</span>
-        <h3>Ephemeral Sandboxing</h3>
-        <p>Microsecond container instances isolating connection contexts in volatile RAM without disk writes.</p>
-      </div>
-
-      <div class="bento-card col-2">
-        <span style="color:var(--acc-l); font-size:0.8rem; font-family:monospace;">ROUTING: ANYCAST</span>
-        <h3>Autonomous BGP Path Reconsolidation</h3>
-        <p>Real-time route steering evading congested upstream transit providers and artificial latency injectors.</p>
       </div>
     </div>
-
-    <section id="deploy" class="form-wrap">
-      <h2 style="font-size:1.5rem; margin-bottom:0.5rem;">Request Developer Ingress Credentials</h2>
-      <p style="color:var(--muted); font-size:0.9rem; margin-bottom:1.5rem;">Submit production infrastructure specifications directly to our network operations team.</p>
-      <form class="ajax-form">
-        <div class="form-group">
-          <label for="name">Lead Engineer / SRE Name</label>
-          <input type="text" id="name" name="name" class="form-input" placeholder="David K." required>
-        </div>
-        <div class="form-group">
-          <label for="email">Organization Work Email</label>
-          <input type="email" id="email" name="email" class="form-input" placeholder="d.k@company.net" required>
-        </div>
-        <div class="form-group">
-          <label for="scope">Cluster Deployment Target</label>
-          <select id="scope" name="scope" class="form-input">
-            <option>Dedicated Edge Gateway Node</option>
-            <option>Multi-Region Transit Peering</option>
-            <option>Custom Telemetry Obfuscation</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="notes">Technical Specifications / Workload Constraints</label>
-          <textarea id="notes" name="notes" rows="3" class="form-input" placeholder="Target RPS, bandwidth bounds..."></textarea>
-        </div>
-        <button type="submit" class="btn btn-primary" style="width:100%;">Dispatch Ingress Brief</button>
-      </form>
-    </section>
   </main>
 
   <footer>
     <div class="container">
-      <div class="foot-grid">
-        <div>
-          <h4>${comp}</h4>
-          <p style="margin-top:0.5rem; line-height:1.5;">Cloud-native edge runtime infrastructure with deterministic microsecond routing.</p>
-        </div>
-        <div>
-          <h4>Platform</h4>
-          <ul style="list-style:none; margin-top:0.5rem; line-height:1.8;">
-            <li><a href="/services.html">Edge Nodes</a></li>
-            <li><a href="/services.html">Telemetry</a></li>
-          </ul>
-        </div>
-        <div>
-          <h4>Governance</h4>
-          <ul style="list-style:none; margin-top:0.5rem; line-height:1.8;">
-            <li><a href="/about.html">Security Specs</a></li>
-            <li><a href="/legal/privacy.html">Privacy Policy</a></li>
-          </ul>
-        </div>
-        <div>
-          <h4>Operations</h4>
-          <ul style="list-style:none; margin-top:0.5rem; line-height:1.8;">
-            <li><a href="#deploy">Console</a></li>
-            <li><a href="/legal/terms.html">Master SLA</a></li>
-          </ul>
-        </div>
-      </div>
-      <div style="display:flex; justify-content:space-between; border-top:1px solid var(--border); padding-top:1.5rem;">
-        <span>&copy; $(date +%Y) ${comp}. All rights reserved.</span>
-        <span>Node ID: FRA-$(date +%s | cut -c7-10)</span>
-      </div>
+      Endpoint: ${domain} • Engine: Ceph S3 Gateway • Route: /api/v1/files/upload
     </div>
   </footer>
   <script src="/assets/app.js"></script>
 </body>
 </html>
 EOF
-
-    generate_subpages "$domain" "$root" "$comp" "Cloud-Native Infrastructure & Edge Nodes"
 }
 
 # ------------------------------------------------------------------------------
-# ARCHETYPE 2: MODERN SAAS & FINTECH CAPITAL ROUTING (Wave Chart + SLA + Accordion)
+# АРХЕТИП 4: EDGE CDN MESH RELAY & NODE TELEMETRY (Fastly / Boundary Style)
 # ------------------------------------------------------------------------------
-generate_archetype_saas() {
+generate_gateway_mesh() {
     local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
-
-    cat << EOF > "$root/assets/style.css"
-:root {
-  --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
-  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.03);
-  --border: rgba(255,255,255,0.08); --txt: #ffffff; --muted: #94a3b8;
-  --font: ${font}; --rad: ${rad};
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; }
-a { color: inherit; text-decoration: none; }
-.container { max-width: 1160px; margin: 0 auto; padding: 0 1.5rem; }
-
-/* Floating Island Header */
-.header-wrap { padding: 1.25rem 0; position: sticky; top:0; z-index:100; }
-header { background: rgba(13, 21, 39, 0.75); backdrop-filter: blur(16px); border: 1px solid var(--border); border-radius: 999px; padding: 0.6rem 1.5rem; display: flex; align-items: center; justify-content: space-between; }
-.logo { font-weight: 800; font-size: 1.2rem; display: flex; align-items: center; gap: 0.5rem; }
-.logo-circle { width: 1.75rem; height: 1.75rem; border-radius: 50%; background: var(--acc); box-shadow: 0 0 12px var(--glow); }
-.nav-links { display: flex; gap: 2rem; list-style: none; font-size: 0.9rem; font-weight: 500; }
-.nav-links a:hover, .nav-links a.active { color: var(--acc-l); }
-.btn { padding: 0.65rem 1.4rem; border-radius: 999px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.2s; border:none; display: inline-flex; align-items: center; gap: 0.5rem; }
-.btn-primary { background: linear-gradient(135deg, var(--acc), var(--acc-h)); color: #fff; box-shadow: 0 4px 15px var(--glow); }
-.btn-primary:hover { transform: translateY(-1px); }
-.btn-outline { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: #fff; }
-
-/* Centered Hero with SVG Wave */
-.hero-center { text-align: center; padding: 5rem 0 3rem; }
-.hero-pill { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.4rem 1rem; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.85rem; color: var(--acc-l); margin-bottom: 1.5rem; }
-.hero-center h1 { font-size: clamp(2.2rem, 4.5vw, 3.8rem); font-weight: 800; line-height: 1.15; max-width: 900px; margin: 0 auto 1.25rem; letter-spacing: -0.02em; }
-.hero-center p { font-size: 1.15rem; color: var(--muted); max-width: 650px; margin: 0 auto 2.25rem; }
-
-/* SVG Wave Chart Container */
-.wave-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2rem; margin: 2rem 0 5rem; position: relative; overflow: hidden; }
-.wave-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; text-align: center; margin-bottom: 1.5rem; }
-.wave-num { font-size: 2rem; font-weight: 800; color: #fff; }
-.wave-lbl { font-size: 0.85rem; color: var(--muted); }
-
-/* Zig-Zag Rows */
-.zigzag-row { display: grid; grid-template-columns: 1fr 1fr; gap: 4rem; align-items: center; padding: 3.5rem 0; border-top: 1px solid var(--border); }
-.zigzag-row.reverse { direction: rtl; }
-.zigzag-row.reverse > * { direction: ltr; }
-.zigzag-content h3 { font-size: 1.85rem; font-weight: 700; margin-bottom: 1rem; }
-.zigzag-content p { color: var(--muted); font-size: 1rem; margin-bottom: 1.25rem; }
-.zigzag-bullets { list-style: none; }
-.zigzag-bullets li { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; font-size: 0.95rem; }
-.bullet-icon { color: #10b981; font-weight: bold; }
-
-/* Pricing / SLA Grid */
-.pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin: 3rem 0 5rem; }
-.price-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2rem; display: flex; flex-direction: column; justify-content: space-between; }
-.price-card.featured { border-color: var(--acc); box-shadow: 0 0 25px var(--glow); position: relative; }
-.price-card h4 { font-size: 1.25rem; margin-bottom: 0.5rem; }
-.price-val { font-size: 2.25rem; font-weight: 800; margin: 1rem 0; color: var(--acc-l); }
-
-/* Accordion */
-.faq-wrap { max-width: 800px; margin: 4rem auto; }
-.accordion-item { border: 1px solid var(--border); border-radius: var(--rad); margin-bottom: 0.85rem; background: var(--bg2); overflow: hidden; }
-.accordion-header { padding: 1.1rem 1.5rem; cursor: pointer; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
-.accordion-body { max-height: 0; padding: 0 1.5rem; overflow: hidden; transition: 0.25s ease; color: var(--muted); font-size: 0.95rem; }
-.accordion-item.active .accordion-body { max-height: 200px; padding: 0 1.5rem 1.25rem; }
-.accordion-item.active .accordion-header { color: var(--acc-l); }
-
-/* Form */
-.form-box { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.5rem; max-width: 650px; margin: 0 auto 5rem; }
-.form-group { margin-bottom: 1.25rem; }
-.form-group label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
-.form-ctrl { width: 100%; background: var(--bg1); border: 1px solid var(--border); padding: 0.75rem 1rem; border-radius: var(--rad); color: #fff; font-family: inherit; }
-.form-ctrl:focus { outline: none; border-color: var(--acc); }
-
-footer { border-top: 1px solid var(--border); padding: 3.5rem 0 2rem; color: var(--muted); font-size: 0.85rem; }
-@media (max-width: 868px) {
-  .zigzag-row { grid-template-columns: 1fr; gap: 2rem; }
-  .zigzag-row.reverse { direction: ltr; }
-  .pricing-grid { grid-template-columns: 1fr; }
-  .nav-links { display: none; }
-}
-EOF
-
-    cat << EOF > "$root/index.html"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${comp} | Low-Latency Routing & Capital Market Engines</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/assets/style.css">
-</head>
-<body>
-  <div class="header-wrap">
-    <div class="container">
-      <header>
-        <div class="logo">
-          <div class="logo-circle"></div>
-          <span>${comp}</span>
-        </div>
-        <ul class="nav-links">
-          <li><a href="/" class="active">Core Engine</a></li>
-          <li><a href="/services.html">SLA Tiers</a></li>
-          <li><a href="/about.html">Architecture</a></li>
-          <li><a href="#faq">FAQ</a></li>
-        </ul>
-        <a href="#connect" class="btn btn-primary">Client Ingress</a>
-      </header>
-    </div>
-  </div>
-
-  <main class="container">
-    <section class="hero-center">
-      <div class="hero-pill">⚡ High-Frequency Execution Fabric v4.2</div>
-      <h1>Autonomous Low-Jitter Capital Routing & Execution</h1>
-      <p>Hardware-synchronized market data distribution, FPGA-accelerated tick validation, and point-to-point dark fiber interconnects.</p>
-      <div style="display:flex; justify-content:center; gap:1rem;">
-        <a href="#connect" class="btn btn-primary">Request Ingress Port</a>
-        <a href="/services.html" class="btn btn-outline">Explore Whitepaper</a>
-      </div>
-
-      <div class="wave-card">
-        <div class="wave-stats">
-          <div><div class="wave-num">&lt; 850ns</div><div class="wave-lbl">Hardware Gateway Tick-to-Trade</div></div>
-          <div><div class="wave-num">99.999%</div><div class="wave-lbl">Core Engine Uptime SLA</div></div>
-          <div><div class="wave-num">18.5M</div><div class="wave-lbl">Orders Processed / Sec</div></div>
-        </div>
-        <svg viewBox="0 0 800 120" style="width:100%; height:80px; stroke:${acc}; fill:none; stroke-width:3;">
-          <path d="M0,80 Q100,20 200,60 T400,30 T600,70 T800,40" />
-        </svg>
-      </div>
-    </section>
-
-    <!-- Zig Zag 1 -->
-    <section class="zigzag-row">
-      <div class="zigzag-content">
-        <h3>Kernel-Bypass Hardware Networking</h3>
-        <p>Solarflare OpenOnload and DPDK direct memory queues stripping OS scheduler overhead from transmission streams.</p>
-        <ul class="zigzag-bullets">
-          <li><span class="bullet-icon">&#10003;</span> Sub-microsecond user-space DMA buffers</li>
-          <li><span class="bullet-icon">&#10003;</span> Zero packet drops under 40Gbps line bursts</li>
-          <li><span class="bullet-icon">&#10003;</span> Automated hardware clock sync via IEEE 1588 PTP</li>
-        </ul>
-      </div>
-      <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--rad); padding:2rem; text-align:center;">
-        <svg width="120" height="120" viewBox="0 0 24 24" fill="none" stroke="${acc}" stroke-width="1.5"><rect x="2" y="2" width="20" height="20" rx="4"/><path d="M7 12h10M12 7v10"/></svg>
-        <h4 style="margin-top:1rem;">Synchronized Clock Edge</h4>
-        <p style="color:var(--muted); font-size:0.85rem;">Hardware nanosecond stamping</p>
-      </div>
-    </section>
-
-    <!-- Zig Zag 2 -->
-    <section class="zigzag-row reverse">
-      <div class="zigzag-content">
-        <h3>Deterministic Line Pacing</h3>
-        <p>Dynamic XHTTP transport padding eliminating packet size fingerprints across transit corridors without degrading round-trip times.</p>
-        <ul class="zigzag-bullets">
-          <li><span class="bullet-icon">&#10003;</span> Dynamic frame envelope: 100-1400 B</li>
-          <li><span class="bullet-icon">&#10003;</span> Session lifetime cycling: 15-65 seconds</li>
-          <li><span class="bullet-icon">&#10003;</span> Non-standard multiplex framing resistance</li>
-        </ul>
-      </div>
-      <div style="background:var(--bg2); border:1px solid var(--border); border-radius:var(--rad); padding:2rem; text-align:center;">
-        <svg width="120" height="120" viewBox="0 0 24 24" fill="none" stroke="${acc}" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-        <h4 style="margin-top:1rem;">Adaptive Session Cycling</h4>
-        <p style="color:var(--muted); font-size:0.85rem;">Eliminates persistent state correlation</p>
-      </div>
-    </section>
-
-    <!-- SLA Tiers -->
-    <section style="text-align:center; padding-top:3rem;">
-      <h2>Institutional Deployment Tiers</h2>
-      <p style="color:var(--muted);">Select execution throughput and isolation parameters.</p>
-      <div class="pricing-grid">
-        <div class="price-card">
-          <div>
-            <h4>Co-Location Cross-Connect</h4>
-            <p style="color:var(--muted); font-size:0.85rem;">Standard financial exchange links</p>
-            <div class="price-val">1 Gbps</div>
-            <ul style="list-style:none; font-size:0.85rem; line-height:2; color:var(--muted); text-align:left;">
-              <li>&bull; Frankfurt / London PoP</li>
-              <li>&bull; Standard PTP Sync</li>
-              <li>&bull; 99.99% Core Uptime</li>
-            </ul>
-          </div>
-          <a href="#connect" class="btn btn-outline" style="margin-top:1.5rem; width:100%; justify-content:center;">Provision</a>
-        </div>
-
-        <div class="price-card featured">
-          <div style="position:absolute; top:-12px; left:50%; transform:translateX(-50%); background:var(--acc); padding:0.2rem 0.8rem; border-radius:999px; font-size:0.75rem; font-weight:700;">RECOMMENDED</div>
-          <div>
-            <h4>Dedicated FPGA Gateway</h4>
-            <p style="color:var(--muted); font-size:0.85rem;">Nanosecond hardware execution</p>
-            <div class="price-val">10 Gbps</div>
-            <ul style="list-style:none; font-size:0.85rem; line-height:2; color:var(--muted); text-align:left;">
-              <li>&bull; Hardware Register Routing</li>
-              <li>&bull; IEEE 1588 Nanosecond PTP</li>
-              <li>&bull; 99.999% SLA Guarantee</li>
-              <li>&bull; Direct Fiber Cross-Connect</li>
-            </ul>
-          </div>
-          <a href="#connect" class="btn btn-primary" style="margin-top:1.5rem; width:100%; justify-content:center;">Provision Cluster</a>
-        </div>
-
-        <div class="price-card">
-          <div>
-            <h4>Sovereign Dark Fiber Mesh</h4>
-            <p style="color:var(--muted); font-size:0.85rem;">Private optical carrier routing</p>
-            <div class="price-val">40 Gbps</div>
-            <ul style="list-style:none; font-size:0.85rem; line-height:2; color:var(--muted); text-align:left;">
-              <li>&bull; Custom DWDM Multiplexing</li>
-              <li>&bull; Zero-Knowledge Node Enclaves</li>
-              <li>&bull; 24/7 Dedicated Engineering NOC</li>
-            </ul>
-          </div>
-          <a href="#connect" class="btn btn-outline" style="margin-top:1.5rem; width:100%; justify-content:center;">Contact Desk</a>
-        </div>
-      </div>
-    </section>
-
-    <!-- FAQ Accordion -->
-    <section id="faq" class="faq-wrap">
-      <h2 style="text-align:center; margin-bottom:2rem;">Frequently Asked Technical Questions</h2>
-      <div class="accordion-item active">
-        <div class="accordion-header">
-          <span>How is microsecond routing latency maintained under network congestion?</span>
-          <span>&darr;</span>
-        </div>
-        <div class="accordion-body">
-          Our gateways employ automated BGP path calculation coupled with hardware kernel-bypass (DPDK), steering packets through dedicated private interconnects before public transit congestion impacts jitter.
-        </div>
-      </div>
-      <div class="accordion-item">
-        <div class="accordion-header">
-          <span>What cryptographic protection is applied to in-flight orders?</span>
-          <span>&darr;</span>
-        </div>
-        <div class="accordion-body">
-          All data channels mandate TLS 1.3 with ChaCha20-Poly1305 and AES-256-GCM cipher suites, rotating ephemeral keys continuously without session renegotiation stalls.
-        </div>
-      </div>
-      <div class="accordion-item">
-        <div class="accordion-header">
-          <span>What is the guaranteed failover recovery window?</span>
-          <span>&darr;</span>
-        </div>
-        <div class="accordion-body">
-          Sub-50ms carrier optical switching ensures automatic failover across redundant transatlantic fiber routes with zero transaction state loss.
-        </div>
-      </div>
-    </section>
-
-    <!-- Form -->
-    <section id="connect" class="form-box">
-      <h2 style="font-size:1.5rem; margin-bottom:0.5rem; text-align:center;">Request Dedicated Institutional Port</h2>
-      <p style="color:var(--muted); font-size:0.9rem; margin-bottom:1.5rem; text-align:center;">Connect your execution desk directly to our low-latency gateway.</p>
-      <form class="ajax-form">
-        <div class="form-group">
-          <label for="name">Institutional Officer Name</label>
-          <input type="text" id="name" name="name" class="form-ctrl" placeholder="Marcus Sterling" required>
-        </div>
-        <div class="form-group">
-          <label for="email">Corporate Entity Email</label>
-          <input type="email" id="email" name="email" class="form-ctrl" placeholder="m.sterling@capital.com" required>
-        </div>
-        <div class="form-group">
-          <label for="scope">Desired Port Capacity</label>
-          <select id="scope" name="scope" class="form-ctrl">
-            <option>10 Gbps Dedicated FPGA Cross-Connect</option>
-            <option>1 Gbps Co-Location Uplink</option>
-            <option>40 Gbps Dark Fiber Interconnect</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="notes">Exchange Venues / Target Latencies</label>
-          <textarea id="notes" name="notes" rows="3" class="form-ctrl" placeholder="Eurex, CME, LSE routing constraints..."></textarea>
-        </div>
-        <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center;">Submit Ingress Request</button>
-      </form>
-    </section>
-  </main>
-
-  <footer>
-    <div class="container" style="display:flex; justify-content:space-between; align-items:center;">
-      <div>&copy; $(date +%Y) ${comp}. All rights reserved.</div>
-      <div style="display:flex; gap:1.5rem;">
-        <a href="/services.html">SLA Matrix</a>
-        <a href="/legal/privacy.html">Privacy Standard</a>
-        <a href="/legal/terms.html">Master Terms</a>
-      </div>
-    </div>
-  </footer>
-  <script src="/assets/app.js"></script>
-</body>
-</html>
-EOF
-
-    generate_subpages "$domain" "$root" "$comp" "Capital Routing & High-Frequency Architecture"
-}
-
-# ------------------------------------------------------------------------------
-# ARCHETYPE 3: AUTONOMOUS CYBER DEFENSE & SOC WAR ROOM (Radar + Incident Feed)
-# ------------------------------------------------------------------------------
-generate_archetype_soc() {
-    local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
-
-    cat << EOF > "$root/assets/style.css"
-:root {
-  --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
-  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.03);
-  --border: rgba(255,255,255,0.1); --txt: #f1f5f9; --muted: #94a3b8;
-  --font: ${font}; --rad: ${rad};
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; }
-a { color: inherit; text-decoration: none; }
-.container { max-width: 1200px; margin: 0 auto; padding: 0 1.5rem; }
-
-/* Alert Ribbon at Very Top */
-.alert-ribbon { background: rgba(239, 68, 68, 0.15); border-bottom: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; font-family: monospace; font-size: 0.78rem; padding: 0.4rem 0; text-align: center; letter-spacing: 0.05em; }
-
-header { background: rgba(10, 15, 26, 0.9); border-bottom: 1px solid var(--border); padding: 1rem 0; position: sticky; top:0; z-index:100; backdrop-filter: blur(12px); }
-.nav-flex { display: flex; align-items: center; justify-content: space-between; }
-.brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 800; font-size: 1.2rem; }
-.nav-menu { display: flex; gap: 2rem; list-style: none; font-size: 0.9rem; }
-.nav-menu a:hover, .nav-menu a.active { color: var(--acc-l); }
-.btn { padding: 0.6rem 1.25rem; border-radius: var(--rad); font-size: 0.85rem; font-weight: 700; cursor: pointer; transition: 0.2s; border: none; text-transform: uppercase; letter-spacing: 0.05em; }
-.btn-red { background: var(--acc); color: #fff; box-shadow: 0 0 15px var(--glow); }
-.btn-red:hover { background: var(--acc-h); }
-
-/* SOC Hero with Radar */
-.soc-hero { display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 3rem; align-items: center; padding: 4.5rem 0 3.5rem; }
-.soc-tag { display: inline-block; padding: 0.2rem 0.6rem; background: rgba(255,255,255,0.06); border: 1px solid var(--border); font-family: monospace; font-size: 0.75rem; color: var(--acc-l); margin-bottom: 1rem; }
-.soc-hero h1 { font-size: 2.75rem; font-weight: 900; line-height: 1.15; margin-bottom: 1rem; text-transform: uppercase; }
-.soc-hero p { color: var(--muted); font-size: 1.05rem; margin-bottom: 2rem; }
-
-/* Radar Widget */
-.radar-box { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 1.5rem; text-align: center; position: relative; }
-.radar-circle { width: 160px; height: 160px; border-radius: 50%; border: 1px dashed var(--acc); margin: 0 auto 1rem; position: relative; display: flex; align-items: center; justify-content: center; }
-.radar-sweep { position: absolute; width: 100%; height: 100%; border-radius: 50%; border-top: 2px solid var(--acc-l); animation: spin 4s linear infinite; }
-@keyframes spin { 100% { transform: rotate(360deg); } }
-
-/* Incident Feed Table */
-.feed-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2rem; margin: 3rem 0 5rem; }
-.feed-table { width: 100%; border-collapse: collapse; font-family: monospace; font-size: 0.82rem; margin-top: 1.25rem; }
-.feed-table th { text-align: left; padding: 0.6rem; border-bottom: 1px solid var(--border); color: var(--muted); }
-.feed-table td { padding: 0.75rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.04); }
-.badge-def { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
-.badge-green { background: rgba(16,185,129,0.15); color: #34d399; }
-.badge-red { background: rgba(239,68,68,0.15); color: #f87171; }
-
-/* 4-Pillar Grid */
-.pillar-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; margin-bottom: 5rem; }
-.pillar-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 1.5rem; }
-.pillar-card h4 { font-size: 1.05rem; margin-bottom: 0.5rem; }
-.pillar-card p { font-size: 0.85rem; color: var(--muted); }
-
-/* Form */
-.soc-form { max-width: 650px; margin: 0 auto 5rem; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.5rem; }
-.form-input { width: 100%; background: var(--bg1); border: 1px solid var(--border); padding: 0.75rem 1rem; border-radius: var(--rad); color: #fff; font-family: inherit; margin-top: 0.35rem; }
-.form-input:focus { outline: none; border-color: var(--acc); }
-
-footer { border-top: 1px solid var(--border); padding: 3rem 0; color: var(--muted); font-size: 0.85rem; }
-@media (max-width: 868px) {
-  .soc-hero { grid-template-columns: 1fr; }
-  .pillar-grid { grid-template-columns: 1fr 1fr; }
-  .nav-menu { display: none; }
-  .feed-table { display: block; overflow-x: auto; }
-}
-EOF
-
-    cat << EOF > "$root/index.html"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${comp} | Autonomous Threat Defense & Zero-Trust SOC</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/assets/style.css">
-</head>
-<body>
-  <div class="alert-ribbon">
-    [SOC MONITOR: ACTIVE] HONEYPOT DECOYS ONLINE &bull; 0 UNMITIGATED ANOMALIES &bull; ALL ENCLAVES SECURE
-  </div>
-
-  <header>
-    <div class="container nav-flex">
-      <div class="brand">
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="${acc}" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>${comp}</span>
-      </div>
-      <ul class="nav-menu">
-        <li><a href="/" class="active">SOC Perimeter</a></li>
-        <li><a href="/services.html">Threat Feeds</a></li>
-        <li><a href="/about.html">Incident Response</a></li>
-        <li><a href="/legal/privacy.html">Zero-Knowledge</a></li>
-      </ul>
-      <a href="#soc-desk" class="btn btn-red">Emergency Ingress</a>
-    </div>
-  </header>
-
-  <main class="container">
-    <section class="soc-hero">
-      <div>
-        <span class="soc-tag">CLASSIFIED // TIER-1 CYBER RESILIENCE</span>
-        <h1>Autonomous Cryptographic Perimeter & Threat Neutralization</h1>
-        <p>Line-rate packet auditing, automated honeynet decoy routing, and ephemeral memory enclaves isolating adversarial reconnaissance probes before ingress reach.</p>
-        <div style="display:flex; gap:1rem;">
-          <a href="#soc-desk" class="btn btn-red">Dispatch Incident Advisory</a>
-          <a href="/services.html" class="btn btn-red" style="background:transparent; border:1px solid var(--border);">Defense Topology</a>
-        </div>
-      </div>
-
-      <div class="radar-box">
-        <div class="radar-circle">
-          <div class="radar-sweep"></div>
-          <span style="font-family:monospace; font-size:0.8rem; color:var(--acc-l);">SCANNING</span>
-        </div>
-        <h4 style="font-size:1.1rem; margin-bottom:0.25rem;">Global Threat Scrubber</h4>
-        <p style="color:var(--muted); font-size:0.8rem;">1,420,000+ Probes Deflected in Last 24H</p>
-      </div>
-    </section>
-
-    <!-- Incident Log Feed -->
-    <section class="feed-card">
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div>
-          <h3 style="font-size:1.25rem;">Live Active Threat Interception Feed</h3>
-          <p style="color:var(--muted); font-size:0.85rem;">Autonomous edge honeynet dropping malicious scanner telemetry</p>
-        </div>
-        <span class="badge-def badge-green">FEED SYNCED</span>
-      </div>
-
-      <table class="feed-table">
-        <thead>
-          <tr>
-            <th>Timestamp</th>
-            <th>Scanner AS / Origin</th>
-            <th>Vector Type</th>
-            <th>Target Port</th>
-            <th>Mitigation Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>02:16:11</td>
-            <td>AS48314 (HostKey Probe)</td>
-            <td>TLS Fingerprint Mismatch</td>
-            <td>443 / Reality</td>
-            <td><span class="badge-def badge-green">TARPITTED &amp; DIVERTED</span></td>
-          </tr>
-          <tr>
-            <td>02:15:45</td>
-            <td>AS60117 (Censys Scanner)</td>
-            <td>XHTTP Desync Probe</td>
-            <td>443 / Fallback</td>
-            <td><span class="badge-def badge-red">401 UNAUTHORIZED</span></td>
-          </tr>
-          <tr>
-            <td>02:14:22</td>
-            <td>AS208323 (Shodan Audit)</td>
-            <td>Empty SNI Active Probe</td>
-            <td>443 / TLS</td>
-            <td><span class="badge-def badge-green">DECOY SERVED (200 OK)</span></td>
-          </tr>
-          <tr>
-            <td>02:13:08</td>
-            <td>AS42610 (TSPU Pattern Sweep)</td>
-            <td>Padding Entropy Check</td>
-            <td>9443 / Fallback</td>
-            <td><span class="badge-def badge-green">RANDOMIZED ENVELOPE</span></td>
-          </tr>
-        </tbody>
-      </table>
-    </section>
-
-    <!-- 4 Pillars -->
-    <section class="pillar-grid">
-      <div class="pillar-card">
-        <h4 style="color:var(--acc-l);">01. Wire Scrubbing</h4>
-        <p>Volumetric optical filters cleansing anomalous packet burst trains before kernel handover.</p>
-      </div>
-      <div class="pillar-card">
-        <h4 style="color:var(--acc-l);">02. Ephemeral Enclaves</h4>
-        <p>Connection state stored in encrypted RAM pages destroyed immediately upon session termination.</p>
-      </div>
-      <div class="pillar-card">
-        <h4 style="color:var(--acc-l);">03. Honeynet Decoys</h4>
-        <p>Synthetic API endpoints absorbing automated scanner bandwidth without revealing core routes.</p>
-      </div>
-      <div class="pillar-card">
-        <h4 style="color:var(--acc-l);">04. Zero Data Footprint</h4>
-        <p>Strict non-retention policy ensuring packet payload data is never committed to persistent storage.</p>
-      </div>
-    </section>
-
-    <!-- Form -->
-    <section id="soc-desk" class="soc-form">
-      <h2 style="font-size:1.4rem; margin-bottom:0.5rem; text-transform:uppercase;">Engage Operations Center (SOC)</h2>
-      <p style="color:var(--muted); font-size:0.85rem; margin-bottom:1.5rem;">Submit target infrastructure parameters for perimeter hardening.</p>
-      <form class="ajax-form">
-        <div style="margin-bottom:1rem;">
-          <label style="font-size:0.85rem; color:var(--muted);">Security Officer Name</label>
-          <input type="text" id="name" name="name" class="form-input" placeholder="Cmdr. Eric Thorne" required>
-        </div>
-        <div style="margin-bottom:1rem;">
-          <label style="font-size:0.85rem; color:var(--muted);">Authorized Enterprise Email</label>
-          <input type="email" id="email" name="email" class="form-input" placeholder="e.thorne@defense-lab.org" required>
-        </div>
-        <div style="margin-bottom:1rem;">
-          <label style="font-size:0.85rem; color:var(--muted);">Incident Priority Level</label>
-          <select id="scope" name="scope" class="form-input">
-            <option>P1 - Critical Autonomous Perimeter Breach</option>
-            <option>P2 - Elevated Active Probe Activity</option>
-            <option>P3 - Standard Zero-Trust Infrastructure Audit</option>
-          </select>
-        </div>
-        <div style="margin-bottom:1.5rem;">
-          <label style="font-size:0.85rem; color:var(--muted);">Incident Diagnostics / IP Blocks</label>
-          <textarea id="notes" name="notes" rows="3" class="form-input" placeholder="Autonomous system numbers, observed probe patterns..."></textarea>
-        </div>
-        <button type="submit" class="btn btn-red" style="width:100%;">Dispatch High-Priority Advisory</button>
-      </form>
-    </section>
-  </main>
-
-  <footer>
-    <div class="container" style="display:flex; justify-content:space-between;">
-      <span>&copy; $(date +%Y) ${comp}. All operations classified.</span>
-      <div style="display:flex; gap:1.5rem;">
-        <a href="/legal/privacy.html">Privacy Standard</a>
-        <a href="/services.html">Incident Guidelines</a>
-      </div>
-    </div>
-  </footer>
-  <script src="/assets/app.js"></script>
-</body>
-</html>
-EOF
-
-    generate_subpages "$domain" "$root" "$comp" "Threat Intelligence & Cyber Defense Operations"
-}
-
-# ------------------------------------------------------------------------------
-# ARCHETYPE 4: HYPERSCALE NEURAL FABRIC & AI INFERENCE (GPU Pods + Benchmarks)
-# ------------------------------------------------------------------------------
-generate_archetype_neural() {
-    local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
+    mkdir -p "$root/assets"
 
     cat << EOF > "$root/assets/style.css"
 :root {
   --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
   --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.02);
-  --border: rgba(255,255,255,0.08); --txt: #f8fafc; --muted: #94a3b8;
-  --font: ${font}; --rad: ${rad};
+  --border: rgba(255,255,255,0.08); --border-h: rgba(255,255,255,0.18);
+  --txt: #f8fafc; --muted: #94a3b8; --font: ${font}; --rad: ${rad};
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; }
-a { color: inherit; text-decoration: none; }
-.container { max-width: 1220px; margin: 0 auto; padding: 0 1.5rem; }
+body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; min-height: 100vh; display: flex; flex-direction: column; }
+.container { max-width: 1000px; margin: 0 auto; padding: 0 1.25rem; width: 100%; }
+header { padding: 1.25rem 0; border-bottom: 1px solid var(--border); background: rgba(0,0,0,0.3); backdrop-filter: blur(12px); }
+.header-row { display: flex; align-items: center; justify-content: space-between; }
+.logo-area { display: flex; align-items: center; gap: 0.75rem; font-weight: 700; font-size: 1.15rem; }
+.logo-area svg { color: var(--acc); }
+.relay-badge { font-family: monospace; font-size: 0.75rem; padding: 0.25rem 0.65rem; border-radius: 999px; background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid rgba(59,130,246,0.25); }
+main { flex: 1; padding: 2.5rem 0; }
+.mesh-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
+.mesh-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 1.25rem; }
+.mesh-lbl { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; margin-bottom: 0.35rem; }
+.mesh-val { font-size: 1.35rem; font-weight: 700; color: var(--acc-l); font-family: monospace; }
+.mesh-sub { font-size: 0.75rem; color: #10b981; margin-top: 0.25rem; }
+.terminal-window { background: #06090e; border: 1px solid var(--border); border-radius: var(--rad); overflow: hidden; margin-bottom: 1.5rem; }
+.term-bar { background: rgba(255,255,255,0.04); border-bottom: 1px solid var(--border); padding: 0.5rem 1rem; display: flex; align-items: center; justify-content: space-between; font-size: 0.75rem; color: var(--muted); }
+.term-dots { display: flex; gap: 6px; }
+.term-dot { width: 10px; height: 10px; border-radius: 50%; background: #334155; }
+.term-body { padding: 1rem; font-family: monospace; font-size: 0.8rem; height: 210px; overflow-y: auto; color: #cbd5e1; line-height: 1.7; }
+.log-line { display: flex; gap: 0.75rem; }
+.log-ts { color: #64748b; }
+.log-tag { color: var(--acc); }
+.unlock-bar { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 1.25rem; display: flex; gap: 1rem; align-items: center; }
+.unlock-bar input { flex: 1; background: rgba(0,0,0,0.3); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.75rem 1rem; color: #fff; font-family: monospace; font-size: 0.85rem; }
+.unlock-bar input:focus { outline: none; border-color: var(--acc); }
+.btn-maint { background: var(--acc); color: #fff; border: none; border-radius: var(--rad); padding: 0.75rem 1.5rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.btn-maint:hover { background: var(--acc-h); }
+footer { border-top: 1px solid var(--border); padding: 1.25rem 0; font-size: 0.785rem; color: var(--muted); text-align: center; }
+@media (max-width: 768px) { .mesh-grid { grid-template-columns: 1fr; } .unlock-bar { flex-direction: column; align-items: stretch; } }
+EOF
 
-header { background: rgba(12, 10, 26, 0.85); backdrop-filter: blur(14px); border-bottom: 1px solid var(--border); padding: 1.1rem 0; position: sticky; top:0; z-index:100; }
-.nav-row { display: flex; align-items: center; justify-content: space-between; }
-.brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 800; font-size: 1.25rem; }
-.brand svg { filter: drop-shadow(0 0 8px var(--glow)); }
-.nav-links { display: flex; gap: 2rem; list-style: none; font-size: 0.9rem; }
-.nav-links a:hover, .nav-links a.active { color: var(--acc-l); }
-.btn { padding: 0.65rem 1.4rem; border-radius: var(--rad); font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.2s; border: none; }
-.btn-primary { background: var(--acc); color: #fff; box-shadow: 0 4px 15px var(--glow); }
-.btn-primary:hover { background: var(--acc-h); }
-.btn-outline { background: transparent; border: 1px solid var(--border); color: #fff; }
+    cat << EOF > "$root/assets/app.js"
+document.addEventListener('DOMContentLoaded', () => {
+  const termBody = document.getElementById('termBody');
+  const pingVal = document.getElementById('pingVal');
+  const maintBtn = document.getElementById('maintBtn');
 
-/* Hero */
-.ai-hero { text-align: center; padding: 5.5rem 0 3rem; }
-.ai-tag { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.35rem 0.9rem; border-radius: 999px; background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.3); font-size: 0.8rem; color: var(--acc-l); margin-bottom: 1.5rem; }
-.ai-hero h1 { font-size: clamp(2.3rem, 5vw, 3.9rem); font-weight: 900; line-height: 1.15; max-width: 960px; margin: 0 auto 1.25rem; letter-spacing: -0.02em; }
-.ai-hero p { font-size: 1.15rem; color: var(--muted); max-width: 700px; margin: 0 auto 2.5rem; }
+  const logs = [
+    "[BGP] Transit route broadcasted: Anycast AS-44",
+    "[INGRESS] Stream /api/v1/files/upload socket allocated on loopback:9443",
+    "[TCP] BBR congestion window updated: 480 pkts",
+    "[TLS] Handshake: X25519MLKEM768 hybrid negotiated",
+    "[ENCLAVE] Volatile memory scrubbed: 0 bytes leaked"
+  ];
 
-/* Interactive Benchmark Tabs */
-.bench-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2rem; margin: 2rem auto 5rem; max-width: 900px; }
-.bench-tabs { display: flex; gap: 0.75rem; justify-content: center; margin-bottom: 2rem; }
-.bench-tab { padding: 0.5rem 1rem; border-radius: var(--rad); background: rgba(255,255,255,0.04); border: 1px solid var(--border); font-size: 0.85rem; cursor: pointer; color: var(--muted); }
-.bench-tab.active { background: var(--acc); color: #fff; border-color: var(--acc); }
-.bench-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; text-align: center; }
-.bench-val { font-size: 1.85rem; font-weight: 800; color: #fff; }
-.bench-lbl { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+  let idx = 0;
+  setInterval(() => {
+    const d = new Date().toISOString().substring(11, 19);
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    div.innerHTML = \`<span class="log-ts">\${d}</span> <span class="log-tag">[TELEMETRY]</span> <span>\${logs[idx % logs.length]}</span>\`;
+    termBody.appendChild(div);
+    termBody.scrollTop = termBody.scrollHeight;
+    idx++;
 
-/* GPU Fabric Meters */
-.meter-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2rem; margin-bottom: 5rem; }
-.meter-row { margin-bottom: 1.5rem; }
-.meter-head { display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 0.5rem; }
-.meter-bar { width: 100%; height: 8px; background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden; }
-.meter-fill { height: 100%; background: var(--acc); border-radius: 999px; }
+    if (pingVal) {
+      const ping = (1.1 + Math.random() * 0.3).toFixed(1);
+      pingVal.innerText = \`\${ping} ms\`;
+    }
+  }, 3200);
 
-/* Code Box */
-.code-frame { background: #070614; border: 1px solid var(--border); border-radius: var(--rad); padding: 1.5rem; font-family: monospace; font-size: 0.85rem; color: #cbd5e1; margin: 2rem 0; overflow-x: auto; }
-
-/* Form */
-.gpu-form { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.5rem; max-width: 680px; margin: 0 auto 5rem; }
-.gpu-form label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
-.gpu-input { width: 100%; background: var(--bg1); border: 1px solid var(--border); padding: 0.75rem 1rem; border-radius: var(--rad); color: #fff; font-family: inherit; margin-bottom: 1.25rem; }
-.gpu-input:focus { outline: none; border-color: var(--acc); }
-
-footer { border-top: 1px solid var(--border); padding: 3rem 0; color: var(--muted); font-size: 0.85rem; }
-@media (max-width: 868px) {
-  .bench-grid { grid-template-columns: 1fr 1fr; }
-  .nav-links { display: none; }
-}
+  if (maintBtn) {
+    maintBtn.addEventListener('click', () => {
+      alert('Authorization Refused (401): Administrative node certificate required for maintenance socket.');
+    });
+  }
+});
 EOF
 
     cat << EOF > "$root/index.html"
@@ -1165,258 +877,174 @@ EOF
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${comp} | Hyperscale Neural Processing &amp; Tensor Fabric</title>
+  <title>${comp} | Edge Mesh Transit</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
   <header>
-    <div class="container nav-row">
-      <div class="brand">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="${acc}" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="19" cy="5" r="2"/><circle cx="5" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M7 6h10M6 7v10M18 7v10M7 18h10"/></svg>
-        <span>${comp}</span>
+    <div class="container header-row">
+      <div class="logo-area">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span>${comp} Edge Relay</span>
       </div>
-      <ul class="nav-links">
-        <li><a href="/" class="active">Compute Pool</a></li>
-        <li><a href="/services.html">Benchmarks</a></li>
-        <li><a href="/about.html">InfiniBand Mesh</a></li>
-        <li><a href="/legal/privacy.html">Zero-Log Policy</a></li>
-      </ul>
-      <a href="#cluster" class="btn btn-primary">Allocate GPU Pod</a>
+      <div class="relay-badge">NODE: POP-EU-02</div>
     </div>
   </header>
 
-  <main class="container">
-    <section class="ai-hero">
-      <div class="ai-tag">✨ Distributed Inference Engine v5.1</div>
-      <h1>Hyperscale Neural Processing &amp; Distributed Tensor Fabrics</h1>
-      <p>Purpose-built bare-metal clusters engineered for multi-modal model serving, parallel checkpoint sharding, and sub-10ms token generation.</p>
-      <div style="display:flex; justify-content:center; gap:1rem;">
-        <a href="#cluster" class="btn btn-primary">Reserve SuperPOD Capacity</a>
-        <a href="/services.html" class="btn btn-outline">Review ArXiv Paper</a>
-      </div>
-
-      <!-- Benchmark Widget -->
-      <div class="bench-card">
-        <div class="bench-tabs">
-          <button class="bench-tab active" data-bench="fp8">FP8 Quantized Inference</button>
-          <button class="bench-tab" data-bench="bf16">BF16 Multi-Node Training</button>
-          <button class="bench-tab" data-bench="kv">Dynamic KV-Cache Sharding</button>
+  <main>
+    <div class="container">
+      <div class="mesh-grid">
+        <div class="mesh-card">
+          <div class="mesh-lbl">Ingress Latency</div>
+          <div class="mesh-val" id="pingVal">1.2 ms</div>
+          <div class="mesh-sub">● BBR v3 Accelerated</div>
         </div>
-        <div class="bench-grid">
-          <div><div id="bench-tps" class="bench-val">18,450</div><div class="bench-lbl">Tokens / Sec / Node</div></div>
-          <div><div id="bench-ttft" class="bench-val">5.4ms</div><div class="bench-lbl">Time to First Token (TTFT)</div></div>
-          <div><div id="bench-fabric" class="bench-val">3.2 Tbps</div><div class="bench-lbl">InfiniBand RoCEv2 Fabric</div></div>
-          <div><div id="bench-util" class="bench-val">98.4%</div><div class="bench-lbl">VRAM Compute Efficiency</div></div>
+        <div class="mesh-card">
+          <div class="mesh-lbl">Stream Route</div>
+          <div class="mesh-val" style="font-size:1.1rem; padding-top:0.25rem;">/api/v1/files/upload</div>
+          <div class="mesh-sub">● TLS 1.3 Restricted</div>
+        </div>
+        <div class="mesh-card">
+          <div class="mesh-lbl">Transit State</div>
+          <div class="mesh-val">PASS-THROUGH</div>
+          <div class="mesh-sub">● Zero Persistent Storage</div>
         </div>
       </div>
-    </section>
 
-    <!-- GPU Fabric Meters -->
-    <section class="meter-card">
-      <h3 style="font-size:1.35rem; margin-bottom:1.5rem;">Interconnect Fabric Health &amp; Bus Saturation</h3>
-      
-      <div class="meter-row">
-        <div class="meter-head">
-          <span>Non-Blocking InfiniBand RoCEv2 Fabric</span>
-          <span style="color:var(--acc-l);">3.18 / 3.20 Tbps (99.3%)</span>
+      <div class="terminal-window">
+        <div class="term-bar">
+          <div class="term-dots">
+            <span class="term-dot"></span><span class="term-dot"></span><span class="term-dot"></span>
+          </div>
+          <span>EDGE NODE INGRESS STREAM LOG</span>
         </div>
-        <div class="meter-bar"><div class="meter-fill" style="width:99%;"></div></div>
-      </div>
-
-      <div class="meter-row">
-        <div class="meter-head">
-          <span>HBM3e Memory Bandwidth Aggregation</span>
-          <span style="color:var(--acc-l);">3.35 TB/s (95.1%)</span>
+        <div class="term-body" id="termBody">
+          <div class="log-line"><span class="log-ts">12:00:01</span> <span class="log-tag">[INIT]</span> <span>Edge ingress controller initialized. Listening on loopback.</span></div>
+          <div class="log-line"><span class="log-ts">12:00:03</span> <span class="log-tag">[ROUTER]</span> <span>Attached virtual location /api/v1/files/upload to stream handler.</span></div>
         </div>
-        <div class="meter-bar"><div class="meter-fill" style="width:95%;"></div></div>
       </div>
 
-      <div class="meter-row" style="margin-bottom:0;">
-        <div class="meter-head">
-          <span>Speculative Decoding Latency Jitter</span>
-          <span style="color:#10b981;">&lt; 0.9ms (Deterministic)</span>
-        </div>
-        <div class="meter-bar"><div class="meter-fill" style="width:100%; background:#10b981;"></div></div>
+      <div class="unlock-bar">
+        <input type="password" placeholder="Node Maintenance Credential / Operator Certificate..." autocomplete="off">
+        <button type="button" class="btn-maint" id="maintBtn">Authorize Maintenance Session</button>
       </div>
-    </section>
-
-    <!-- Code Frame -->
-    <section>
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <h3>Distributed Engine Ingress Hook</h3>
-        <button class="copy-btn btn btn-outline" data-target="pycode" style="padding:0.3rem 0.8rem; font-size:0.75rem;">Copy Snippet</button>
-      </div>
-      <div id="pycode" class="code-frame">
-import vllm, torch
-
-# Initialize distributed tensor engine across 8x H100 SXM5 nodes
-engine = vllm.LLMEngine.from_engine_args(
-    vllm.EngineArgs(
-        model="foundation-matrix-70b-instruct",
-        tensor_parallel_size=8,
-        kv_cache_dtype="fp8",
-        max_num_seqs=2048,
-        enforce_eager=False,
-        gpu_memory_utilization=0.96
-    )
-)
-print("[OK] Distributed Fabric Synchronized Across Edge Gateway")
-      </div>
-    </section>
-
-    <!-- Form -->
-    <section id="cluster" class="gpu-form">
-      <h2 style="font-size:1.5rem; margin-bottom:0.5rem; text-align:center;">Allocate Dedicated Compute Pool</h2>
-      <p style="color:var(--muted); font-size:0.9rem; margin-bottom:1.5rem; text-align:center;">Provision high-throughput inference endpoints with guaranteed SLA.</p>
-      <form class="ajax-form">
-        <label for="name">Principal AI Researcher / Engineer</label>
-        <input type="text" id="name" name="name" class="gpu-input" placeholder="Dr. Elena Rostova" required>
-
-        <label for="email">Institutional Academic or Corporate Email</label>
-        <input type="email" id="email" name="email" class="gpu-input" placeholder="rostova@neural-labs.ai" required>
-
-        <label for="scope">Hardware Cluster Topology</label>
-        <select id="scope" name="scope" class="gpu-input">
-          <option>8x H100 SXM5 High-Density Node (640GB HBM3)</option>
-          <option>16x L40S Inference Optimization Pod</option>
-          <option>Custom Bare-Metal InfiniBand SuperPOD</option>
-        </select>
-
-        <label for="notes">Model Parameters &amp; Throughput Targets</label>
-        <textarea id="notes" name="notes" rows="3" class="gpu-input" placeholder="Batch size constraints, concurrent stream concurrency..."></textarea>
-
-        <button type="submit" class="btn btn-primary" style="width:100%;">Dispatch Cluster Reservation</button>
-      </form>
-    </section>
+    </div>
   </main>
 
   <footer>
-    <div class="container" style="display:flex; justify-content:space-between;">
-      <span>&copy; $(date +%Y) ${comp}. All compute fabrics monitored.</span>
-      <div style="display:flex; gap:1.5rem;">
-        <a href="/services.html">Topology</a>
-        <a href="/legal/privacy.html">Privacy Standard</a>
-      </div>
+    <div class="container">
+      Endpoint: ${domain} • Mesh Protocol: Anycast TCP • Socket Fallback Port Active
     </div>
   </footer>
   <script src="/assets/app.js"></script>
 </body>
 </html>
 EOF
-
-    generate_subpages "$domain" "$root" "$comp" "Hyperscale Neural Architectures & Benchmarks"
 }
 
 # ------------------------------------------------------------------------------
-# ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВТОРОСТЕПЕННЫХ СТРАНИЦ
+# АРХЕТИП 5: MINIMALIST DEVELOPER AUTH PORTAL (Linear / Raycast Style)
 # ------------------------------------------------------------------------------
-generate_subpages() {
-    local domain="$1" root="$2" comp="$3" title="$4"
+generate_gateway_minimal() {
+    local domain="$1" root="$2" acc="$3" acc_h="$4" bg1="$5" bg2="$6" glow="$7" light="$8" font="$9" rad="${10}" comp="${11}"
+    mkdir -p "$root/assets"
 
-    # services.html
-    cat << EOF > "$root/services.html"
+    cat << EOF > "$root/assets/style.css"
+:root {
+  --acc: ${acc}; --acc-h: ${acc_h}; --acc-l: ${light}; --glow: ${glow};
+  --bg1: ${bg1}; --bg2: ${bg2}; --card-bg: rgba(255,255,255,0.02);
+  --border: rgba(255,255,255,0.08); --border-h: rgba(255,255,255,0.18);
+  --txt: #f8fafc; --muted: #94a3b8; --font: ${font}; --rad: ${rad};
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background: var(--bg1); color: var(--txt); font-family: var(--font); line-height: 1.6; min-height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.5rem; }
+.dev-card { width: 100%; max-width: 440px; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--rad); padding: 2.25rem; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.6); position: relative; }
+.dev-card::before { content:''; position: absolute; inset: -1px; border-radius: calc(var(--rad) + 1px); padding: 1px; background: linear-gradient(180deg, var(--border-h), transparent); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+.logo-tag { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 700; font-size: 1.1rem; margin-bottom: 1.5rem; }
+.logo-tag svg { color: var(--acc); }
+h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.35rem; }
+p.desc { font-size: 0.85rem; color: var(--muted); margin-bottom: 1.75rem; }
+.token-input { width: 100%; background: rgba(0,0,0,0.35); border: 1px solid var(--border); border-radius: var(--rad); padding: 0.75rem 1rem; color: #fff; font-family: monospace; font-size: 0.875rem; margin-bottom: 1rem; transition: 0.2s; }
+.token-input:focus { outline: none; border-color: var(--acc); box-shadow: 0 0 10px var(--glow); }
+.btn-auth { width: 100%; background: var(--acc); color: #fff; border: none; border-radius: var(--rad); padding: 0.85rem; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: 0.2s; }
+.btn-auth:hover { background: var(--acc-h); }
+.cli-helper { margin-top: 1.75rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+.cli-label { display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem; }
+.cli-copy { background: none; border: none; color: var(--acc-l); font-size: 0.75rem; cursor: pointer; font-family: var(--font); }
+.cli-snippet { background: rgba(0,0,0,0.4); padding: 0.65rem 0.85rem; border-radius: calc(var(--rad) - 2px); font-family: monospace; font-size: 0.785rem; color: #e2e8f0; border: 1px solid var(--border); word-break: break-all; }
+.err-badge { margin-top: 1rem; padding: 0.75rem; border-radius: var(--rad); font-size: 0.8rem; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25); color: #fca5a5; display: none; }
+EOF
+
+    cat << EOF > "$root/assets/app.js"
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('authBtn');
+  const err = document.getElementById('errBadge');
+  const copyBtn = document.getElementById('copyCli');
+
+  if (btn) {
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.innerHTML = '<span style="display:inline-block; animation:spin 1s linear infinite;">⟳</span> Validating Token...';
+      err.style.display = 'none';
+
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = 'Authorize Workspace Session';
+        err.innerHTML = '<strong>Invalid Session Token (401)</strong><br>Token rejected. Bearer scope <code>write:stream</code> missing for endpoint <code>/api/v1/files/upload</code>.';
+        err.style.display = 'block';
+      }, 1000);
+    });
+  }
+
+  if (copyBtn) {
+    copyBtn.addEventListener('click', () => {
+      const code = document.getElementById('cliSnippet').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        copyBtn.innerText = 'Copied!';
+        setTimeout(() => copyBtn.innerText = 'Copy', 2000);
+      });
+    });
+  }
+});
+EOF
+
+    cat << EOF > "$root/index.html"
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>${title} | ${comp}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${comp} | Developer Access</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/assets/style.css">
+  <style>@keyframes spin { 100% { transform: rotate(360deg); } }</style>
 </head>
 <body>
-  <div class="container" style="padding: 4rem 1.5rem;">
-    <a href="/" style="display:inline-block; margin-bottom:2rem; font-weight:bold;">&larr; Return to Overview</a>
-    <h1 style="font-size:2.5rem; margin-bottom:1rem;">${title}</h1>
-    <p style="color:var(--muted); max-width:750px; font-size:1.1rem; margin-bottom:3rem;">Detailed specifications, telemetry bounds, and verified latency metrics.</p>
-    
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:2rem;">
-      <div style="background:var(--bg2); border:1px solid var(--border); padding:2rem; border-radius:var(--rad);">
-        <h3 style="margin-bottom:0.75rem;">Carrier Interconnects</h3>
-        <p style="color:var(--muted); font-size:0.95rem;">Direct optical Tier-1 peering across international exchange points guaranteeing sub-millisecond route calculations.</p>
+  <div class="dev-card">
+    <div class="logo-tag">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      <span>${comp}</span>
+    </div>
+    <h1>Developer Ingress Access</h1>
+    <p class="desc">Paste your personal access token or pair your terminal CLI with this cluster endpoint.</p>
+
+    <input type="password" class="token-input" id="tokenInp" placeholder="pat_live_8f9a2b7c..." autocomplete="off">
+    <button type="button" class="btn-auth" id="authBtn">Authorize Workspace Session</button>
+    <div class="err-badge" id="errBadge"></div>
+
+    <div class="cli-helper">
+      <div class="cli-label">
+        <span>AUTHENTICATE VIA TERMINAL CLI</span>
+        <button class="cli-copy" id="copyCli">Copy</button>
       </div>
-      <div style="background:var(--bg2); border:1px solid var(--border); padding:2rem; border-radius:var(--rad);">
-        <h3 style="margin-bottom:0.75rem;">Cryptographic State Scrubbing</h3>
-        <p style="color:var(--muted); font-size:0.95rem;">Continuous session memory purging ensuring zero user telemetry residue on edge storage nodes.</p>
-      </div>
-      <div style="background:var(--bg2); border:1px solid var(--border); padding:2rem; border-radius:var(--rad);">
-        <h3 style="margin-bottom:0.75rem;">Dynamic Packet Pacing</h3>
-        <p style="color:var(--muted); font-size:0.95rem;">Line-rate frame randomization smoothing packet histograms to resist active probing attacks.</p>
-      </div>
+      <div class="cli-snippet" id="cliSnippet">remna login --endpoint https://${domain}/api/v1/files/upload</div>
     </div>
   </div>
+  <script src="/assets/app.js"></script>
 </body>
 </html>
 EOF
-
-    # about.html
-    cat << EOF > "$root/about.html"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Architecture &amp; Operations | ${comp}</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/assets/style.css">
-</head>
-<body>
-  <div class="container" style="padding: 4rem 1.5rem; max-width:900px;">
-    <a href="/" style="display:inline-block; margin-bottom:2rem; font-weight:bold;">&larr; Return to Overview</a>
-    <h1 style="font-size:2.5rem; margin-bottom:1rem;">Operations &amp; Network Infrastructure</h1>
-    <p style="color:var(--muted); font-size:1.1rem; margin-bottom:2rem;">Operating highly resilient, zero-knowledge edge routing points worldwide.</p>
-    <div style="background:var(--bg2); border:1px solid var(--border); padding:2rem; border-radius:var(--rad); line-height:1.8;">
-      <h3 style="margin-bottom:1rem;">Point of Presence Assurance</h3>
-      <p style="color:var(--muted); margin-bottom:1rem;">All gateway instances operate within certified carrier co-location facilities equipped with N+2 redundant power grids and isolated dark fiber transceivers.</p>
-      <p style="color:var(--muted);">Decoupled control planes ensure continuous routing integrity even under hostile network partitioning or upstream peering failures.</p>
-    </div>
-  </div>
-</body>
-</html>
-EOF
-
-    # 404.html
-    cat << EOF > "$root/404.html"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>404 - Endpoint Not Found | ${comp}</title>
-  <link rel="stylesheet" href="/assets/style.css">
-</head>
-<body style="display:flex; align-items:center; justify-content:center; min-height:100vh; text-align:center;">
-  <div>
-    <h1 style="font-size:5rem; color:var(--acc); margin-bottom:0.5rem;">404</h1>
-    <h2>Endpoint Unreachable</h2>
-    <p style="color:var(--muted); margin:1rem 0 2rem;">The requested edge endpoint is not mapped in the routing table of this node.</p>
-    <a href="/" class="btn btn-primary">Return to Edge Console</a>
-  </div>
-</body>
-</html>
-EOF
-
-    # legal/privacy.html
-    cat << EOF > "$root/legal/privacy.html"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Zero-Knowledge Privacy Standard | ${comp}</title>
-  <link rel="stylesheet" href="/assets/style.css">
-</head>
-<body style="padding:4rem 0;">
-  <div class="container" style="max-width:800px;">
-    <a href="/" style="display:inline-block; margin-bottom:2rem; font-weight:bold;">&larr; Return</a>
-    <h1 style="font-size:2.25rem; margin-bottom:1rem;">Zero-Knowledge Privacy Standard</h1>
-    <p style="color:var(--muted); margin-bottom:2rem;">Effective Date: $(date +%B\ %Y)</p>
-    <div style="background:var(--bg2); border:1px solid var(--border); padding:2rem; border-radius:var(--rad); line-height:1.8; color:var(--muted);">
-      <p style="margin-bottom:1rem;">This network cluster operates strictly on ephemeral cryptographic memory pages. In compliance with strict zero-knowledge protocols, subscriber communication payloads, source IP mappings, and transit metadata are never logged or stored on persistent physical media.</p>
-      <p>All transient memory segments are overwritten and scrubbed upon TCP socket teardown.</p>
-    </div>
-  </div>
-</body>
-</html>
-EOF
-    cp "$root/legal/privacy.html" "$root/legal/terms.html"
 }
 
 # ==============================================================================
@@ -1526,7 +1154,16 @@ $set_real_ip_dirs
         return 200 '{"success":true,"ticket":"INC-84920","status":"QUEUED","message":"Technical brief received and assigned to edge operations"}';
     }
 
-    # Универсальный декой для любых API путей XHTTP (/api/v1/files/upload, /api/v1/telemetry и др.)
+    # Выделенный служебный декой для рабочего XHTTP upload пути
+    location = /api/v1/files/upload {
+        default_type application/json;
+        if (\$request_method = POST) {
+            return 401 '{"status":"error","code":"UNAUTHORIZED","message":"Multipart session authorization signature required","path":"/api/v1/files/upload"}';
+        }
+        return 405 '{"status":"error","code":"METHOD_NOT_ALLOWED","message":"POST multipart/form-data required on file upload endpoint"}';
+    }
+
+    # Универсальный декой для остальных API путей XHTTP
     location ~ ^/api/ {
         default_type application/json;
         return 401 '{"status":"error","code":"UNAUTHORIZED","message":"Authorization bearer token missing or expired"}';
@@ -1942,15 +1579,16 @@ install_selfsni() {
         log_info "PROXY Protocol ВЫКЛЮЧЕН (в Xray xver: 0)"
     fi
 
-    echo -e "\n${MAGENTA}ВЫБОР АРХИТЕКТУРЫ САЙТА ДЛЯ МАСКИРОВКИ:${NC}"
-    echo -e "1) ${CYAN}[Случайно]${NC} 🎲 Автоматический выбор случайной архитектуры и темы (Рекомендуется)"
-    echo -e "2) 💻 DevOps & Cloud Terminal (Сплит Hero, Bento Grid, Live Shell, Latency Table)"
-    echo -e "3) 📈 Modern SaaS & FinTech (SVG Wave, Zig-Zag блоки, SLA Tiers, FAQ Аккордеон)"
-    echo -e "4) 🛡️ Autonomous Cyber Defense (SOC War Room, Radar Sweep, Active Threat Feed)"
-    echo -e "5) ⚡ AI Research & Neural Fabric (GPU SuperPODs, Benchmark Tabs, Bus Meters)"
+    echo -e "\n${MAGENTA}ВЫБОР АРХИТЕКТУРЫ ШЛЮЗА ДЛЯ МАСКИРОВКИ:${NC}"
+    echo -e "1) ${CYAN}[Случайно]${NC} 🎲 Автоматический выбор случайного шлюза (Рекомендуется)"
+    echo -e "2) 🔒 Encrypted Cloud Vault (E2EE хранилище чанков, Send / ProtonDrive, /api/v1/files/upload)"
+    echo -e "3) 🛡️ Zero-Trust Identity Gateway (Корпоративный SSO, WebAuthn FIDO2, ZTNA Perimeter)"
+    echo -e "4) 📦 Private S3 Object Storage Console (MinIO / Ceph S3 Console, API Ingress)"
+    echo -e "5) 🌐 Edge CDN Mesh Relay & Node Telemetry (Сетевой PoP-узел, Anycast, живой лог транзита)"
+    echo -e "6) 💻 Minimalist Dev Auth Portal (Стиль Linear / Raycast, CLI Token & PAT Login)"
 
     local theme_input=""
-    read -rp "Выберите вариант [1-5, по умолчанию: 1]: " theme_input || true
+    read -rp "Выберите вариант [1-6, по умолчанию: 1]: " theme_input || true
     theme_input="${theme_input:-1}"
 
     # Проверка DNS
@@ -2465,6 +2103,16 @@ show_menu() {
         echo -e "${CYAN}│${NC}  ${BOLD}• Домен SNI:${NC}     ${WHITE}${DOMAIN:-Не установлен}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Локальный сокет:${NC} ${WHITE}127.0.0.1:${FALLBACK_PORT:-9443}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• PROXY Protocol:${NC} ${proxy_color}${proxy_str}${NC} ${DIM}[${proxy_note}]${NC}"
+        local pqc_str="ВЫКЛ (Классический X25519)"
+        local pqc_color="${YELLOW}"
+        if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            pqc_str="АКТИВЕН ● (X25519MLKEM768)"
+            pqc_color="${GREEN}"
+        elif check_pqc_active; then
+            pqc_str="ДОСТУПЕН ○ (Выключен)"
+            pqc_color="${CYAN}"
+        fi
+        echo -e "${CYAN}│${NC}  ${BOLD}• Постквант (PQC):${NC} ${pqc_color}${pqc_str}${NC} ${DIM}[NIST ML-KEM-768]${NC}"
         local blocked_rules="0"
         if [ -f "/etc/nginx/blacklist.conf" ]; then
             blocked_rules=$(grep -c "^deny " /etc/nginx/blacklist.conf 2>/dev/null || echo "0")
@@ -2488,22 +2136,28 @@ show_menu() {
         echo -e "   ${BOLD}7${NC} ❯ 📊 Реальный трафик в реальном времени (live tail -f access.log)"
         echo -e "   ${BOLD}8${NC} ❯ 🧹 Очистить журналы логов Nginx"
         echo ""
-        echo -e " ${BOLD}${GREEN}[ 3 ] УПРАВЛЕНИЕ SSL СЕРТИФИКАТАМИ${NC}"
+        local pqc_hint="${YELLOW}Выкл${NC}"
+        if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            pqc_hint="${GREEN}Активен ●${NC}"
+        fi
+
+        echo -e " ${BOLD}${GREEN}[ 3 ] УПРАВЛЕНИЕ SSL СЕРТИФИКАТАМИ И КРИПТОГРАФИЕЙ${NC}"
         echo -e "   ${BOLD}9${NC} ❯ 🔐 Выпустить / Перевыпустить чистый SSL (Auto / ZeroSSL / Let's Encrypt)"
+        echo -e "  ${BOLD}10${NC} ❯ ⚛️  Постквантовая защита X25519MLKEM768 [${pqc_hint}]"
         echo ""
         echo -e " ${BOLD}${BLUE}[ 4 ] СЛУЖБА NGINX И СЕТЬ${NC}"
-        echo -e "  ${BOLD}10${NC} ❯ 🔄 Перезапустить Nginx (Reload / Restart)"
-        echo -e "  ${BOLD}11${NC} ❯ ⏹  Остановить Nginx"
-        echo -e "  ${BOLD}12${NC} ❯ ▶️  Запустить Nginx"
-        echo -e "  ${BOLD}13${NC} ❯ 📝 Редактировать vhost конфигурацию (/etc/nginx/sites-available/...)"
-        echo -e "  ${BOLD}14${NC} ❯ ⚡ Переключить PROXY Protocol [${proxy_toggle_hint}]"
+        echo -e "  ${BOLD}11${NC} ❯ 🔄 Перезапустить Nginx (Reload / Restart)"
+        echo -e "  ${BOLD}12${NC} ❯ ⏹  Остановить Nginx"
+        echo -e "  ${BOLD}13${NC} ❯ ▶️  Запустить Nginx"
+        echo -e "  ${BOLD}14${NC} ❯ 📝 Редактировать vhost конфигурацию (/etc/nginx/sites-available/...)"
+        echo -e "  ${BOLD}15${NC} ❯ ⚡ Переключить PROXY Protocol [${proxy_toggle_hint}]"
         echo ""
         echo -e " ${BOLD}${RED}[ 5 ] СИСТЕМА${NC}"
-        echo -e "  ${BOLD}15${NC} ❯ 🔁 Переустановить / Сменить домен"
-        echo -e "  ${BOLD}16${NC} ❯ 🗑️  Полное удаление SelfSNI"
+        echo -e "  ${BOLD}16${NC} ❯ 🔁 Переустановить / Сменить домен"
+        echo -e "  ${BOLD}17${NC} ❯ 🗑️  Полное удаление SelfSNI"
         echo -e "   ${BOLD}0${NC} ❯ 🚪 Выход в консоль"
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
-        read -rp "❯ Выберите действие [0-16]: " choice || true
+        read -rp "❯ Выберите действие [0-17]: " choice || true
 
         case "$choice" in
             1)
@@ -2515,12 +2169,14 @@ show_menu() {
                 read -r || true
                 ;;
             2)
-                echo -e "\nВыберите архитектуру верстки сайта:"
-                echo -e "2) 💻 DevOps & Cloud Terminal (Bento Grid + Live Shell)"
-                echo -e "3) 📈 Modern SaaS & FinTech (SVG Wave + SLA Tiers + FAQ)"
-                echo -e "4) 🛡️ Autonomous Cyber Defense (SOC War Room + Threat Feed)"
-                echo -e "5) ⚡ AI Research & Neural Fabric (GPU Pods + Benchmark Tabs)"
-                read -rp "Ваш выбор [2-5]: " theme_sel || true
+                echo -e "\n${BOLD}${CYAN}ВЫБОР АРХИТЕКТУРЫ ШЛЮЗА-МАСКИРОВКИ:${NC}"
+                echo -e "2) 🔒 Encrypted Cloud Vault & Chunked File Drop (/api/v1/files/upload)"
+                echo -e "3) 🛡️ Zero-Trust Identity Gateway (SSO / WebAuthn FIDO2)"
+                echo -e "4) 📦 Private S3 Object Storage Console (MinIO / Ceph S3)"
+                echo -e "5) 🌐 Edge CDN Mesh Relay & Node Telemetry (Anycast PoP)"
+                echo -e "6) 💻 Minimalist Dev Auth Portal (Linear / Raycast Style)"
+                read -rp "Ваш выбор [2-6, по умолчанию: 2]: " theme_sel || true
+                theme_sel="${theme_sel:-2}"
                 generate_website "$DOMAIN" "$WEB_ROOT" "$theme_sel"
                 save_config
                 systemctl reload nginx 2>/dev/null || true
@@ -2588,35 +2244,38 @@ EOF
                 read -r || true
                 ;;
             10)
+                pqc_management_menu
+                ;;
+            11)
                 log_info "Перезапуск Nginx..."
                 nginx -t && systemctl restart nginx
                 log_ok "Nginx успешно перезапущен!"
                 sleep 1.5
                 ;;
-            11)
+            12)
                 log_info "Остановка Nginx..."
                 systemctl stop nginx
                 log_warn "Nginx остановлен."
                 sleep 1.5
                 ;;
-            12)
+            13)
                 log_info "Запуск Nginx..."
                 systemctl start nginx
                 log_ok "Nginx запущен!"
                 sleep 1.5
                 ;;
-            13)
+            14)
                 ${EDITOR:-nano} "/etc/nginx/sites-available/$DOMAIN"
                 nginx -t && systemctl reload nginx 2>/dev/null || true
                 ;;
-            14)
+            15)
                 toggle_proxy_protocol
                 ;;
-            15)
+            16)
                 install_selfsni
                 load_config || true
                 ;;
-            16)
+            17)
                 echo -e "\n${RED}ВЫ УВЕРЕНЫ, ЧТО ХОТИТЕ УДАЛИТЬ SELFSNI?${NC}"
                 read -rp "Введите 'yes' для подтверждения удаления: " confirm_del || true
                 if [ "$confirm_del" = "yes" ]; then
@@ -2647,16 +2306,18 @@ EOF
 # ==============================================================================
 # ТОЧКА ВХОДА (MAIN)
 # ==============================================================================
-check_root
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    check_root
 
-if load_config; then
-    # Если конфигурация уже есть — проверяем симлинк и сразу открываем меню!
-    [ -f "$BIN_LINK" ] || install_bin_link
-    show_menu
-else
-    # Первоначальный запуск
-    install_selfsni
     if load_config; then
+        # Если конфигурация уже есть — проверяем симлинк и сразу открываем меню!
+        [ -f "$BIN_LINK" ] || install_bin_link
         show_menu
+    else
+        # Первоначальный запуск
+        install_selfsni
+        if load_config; then
+            show_menu
+        fi
     fi
 fi
