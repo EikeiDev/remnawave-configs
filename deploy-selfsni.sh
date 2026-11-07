@@ -1977,18 +1977,23 @@ import sys
 
 try:
     libssl = ctypes.CDLL("libssl.so.3")
+    libssl.OPENSSL_init_ssl.argtypes = [ctypes.c_uint64, ctypes.c_void_p]
+    libssl.OPENSSL_init_ssl.restype = ctypes.c_int
     libssl.OPENSSL_init_ssl(0x00000040, None)
+
     libssl.TLS_server_method.restype = ctypes.c_void_p
     libssl.SSL_CTX_new.argtypes = [ctypes.c_void_p]
     libssl.SSL_CTX_new.restype = ctypes.c_void_p
-    libssl.SSL_CTX_set1_curves_list.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    libssl.SSL_CTX_set1_curves_list.restype = ctypes.c_int
+    # В OpenSSL SSL_CTX_set1_curves_list — это C-макрос для SSL_CTX_ctrl(ctx, 92, 0, str)
+    libssl.SSL_CTX_ctrl.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_long, ctypes.c_char_p]
+    libssl.SSL_CTX_ctrl.restype = ctypes.c_long
 
     ctx = libssl.SSL_CTX_new(libssl.TLS_server_method())
     if not ctx:
         print("X25519:prime256v1:secp384r1")
         sys.exit(0)
 
+    SSL_CTRL_SET_GROUPS_LIST = 92
     candidates = [
         b"X25519MLKEM768:x25519_kyber768:X25519:prime256v1:secp384r1",
         b"X25519MLKEM768:X25519:prime256v1:secp384r1",
@@ -1997,7 +2002,7 @@ try:
         b"x25519_kyber768:X25519:prime256v1:secp384r1",
     ]
     for cand in candidates:
-        if libssl.SSL_CTX_set1_curves_list(ctx, cand) == 1:
+        if libssl.SSL_CTX_ctrl(ctx, SSL_CTRL_SET_GROUPS_LIST, 0, cand) == 1:
             print(cand.decode("utf-8"))
             sys.exit(0)
 except Exception:
@@ -2078,17 +2083,16 @@ try:
         if m and not re.search(r'^\s*providers\s*=\s*provider_sect', m.group(1), re.M):
             text = re.sub(r'(^\s*\[openssl_init\])', r'\1\nproviders = provider_sect', text, count=1, flags=re.M)
 
-    # 4. Секция [provider_sect]
+    # 4. Секция [provider_sect] — default ОБЯЗАТЕЛЬНО должен загружаться ПЕРЕД oqsprovider (для гибрида X25519MLKEM768)
     if not re.search(r'^\s*\[provider_sect\]', text, re.M):
         text += "\n[provider_sect]\ndefault = default_sect\noqsprovider = oqsprovider_sect\n"
     else:
-        m = re.search(r'(^\s*\[provider_sect\][^\[]*)', text, re.M | re.S)
-        if m:
-            sec = m.group(1)
-            if not re.search(r'^\s*default\s*=\s*default_sect', sec, re.M):
-                text = re.sub(r'(^\s*\[provider_sect\])', r'\1\ndefault = default_sect', text, count=1, flags=re.M)
-            if not re.search(r'^\s*oqsprovider\s*=\s*oqsprovider_sect', sec, re.M):
-                text = re.sub(r'(^\s*\[provider_sect\])', r'\1\noqsprovider = oqsprovider_sect', text, count=1, flags=re.M)
+        def fix_provider_sect(match):
+            body = match.group(1)
+            body = re.sub(r'^\s*default\s*=\s*default_sect\s*\n?', '', body, flags=re.M)
+            body = re.sub(r'^\s*oqsprovider\s*=\s*oqsprovider_sect\s*\n?', '', body, flags=re.M)
+            return "[provider_sect]\ndefault = default_sect\noqsprovider = oqsprovider_sect\n" + body.lstrip("\r\n")
+        text = re.sub(r'^\s*\[provider_sect\]\s*\n([^\[]*)', fix_provider_sect, text, count=1, flags=re.M | re.S)
 
     # 5. Секция [default_sect] — ОБЯЗАТЕЛЬНО activate = 1 (иначе отключается классический X25519!)
     if not re.search(r'^\s*\[default_sect\]', text, re.M):
@@ -2164,6 +2168,8 @@ install_oqs_provider() {
     cmake -S . -B _build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DCMAKE_INSTALL_RPATH="/usr/local/lib;/usr/local/lib64" \
+        -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
         -DBUILD_TESTING=OFF \
         -Dliboqs_DIR=/usr/local
     ninja -C _build install
