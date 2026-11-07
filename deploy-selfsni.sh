@@ -1248,6 +1248,25 @@ configure_nginx() {
         http2_standalone_dir="http2 on;"
     fi
 
+    # Проверка активности IPv6 в ядре (предотвращает ошибку Address family not supported на IPv4-only VPS)
+    local listen_ipv6_default=""
+    local listen_ipv6_standard=""
+    if [ -f /proc/net/if_inet6 ] && [ -s /proc/net/if_inet6 ] && [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 1)" -eq 0 ]; then
+        listen_ipv6_default="listen [::]:80 default_server;"
+        listen_ipv6_standard="listen [::]:80;"
+    fi
+
+    # Включаем OCSP Stapling только если в сертификате присутствует OCSP Responder URI
+    # (в новых сертификатах Let's Encrypt 2025+ и локальных fallback-сертификатах OCSP URI отсутствует, что вызывает [warn] при nginx -t)
+    local ocsp_stapling_block=""
+    local cert_fullchain="/etc/letsencrypt/live/$target_domain/fullchain.pem"
+    if [ -f "$cert_fullchain" ] && [ -n "$(openssl x509 -noout -ocsp_uri -in "$cert_fullchain" 2>/dev/null || true)" ]; then
+        ocsp_stapling_block="ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 1.1.1.1 8.8.8.8 valid=300s;
+    resolver_timeout 5s;"
+    fi
+
     cat << EOF > "$nginx_conf"
 # ==============================================================================
 # NGINX SELFSNI FALLBACK & ANTI-IP-SCAN GUARD
@@ -1258,7 +1277,7 @@ configure_nginx() {
 # 1. Защита порта 80 от сканирования по голому IP (мгновенный сброс соединения 444)
 server {
     listen 80 default_server;
-    listen [::]:80 default_server;
+    $listen_ipv6_default
     server_name _;
     return 444;
 }
@@ -1266,7 +1285,7 @@ server {
 # 2. Легитимный HTTP-сервер (отвечает только при запросе домена $target_domain)
 server {
     listen 80;
-    listen [::]:80;
+    $listen_ipv6_standard
     server_name $target_domain;
 
     location /.well-known/acme-challenge/ {
@@ -1284,6 +1303,7 @@ server {
     listen 127.0.0.1:$target_port ssl $listen_http2_inline $proxy_proto_dir default_server;
     $http2_standalone_dir
     server_name _;
+$set_real_ip_dirs
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
@@ -1317,11 +1337,7 @@ $set_real_ip_dirs
     ssl_session_timeout 1d;
     ssl_session_tickets off;
 
-    # OCSP Stapling (Корпоративный TLS-отпечаток Let's Encrypt)
-    ssl_stapling on;
-    ssl_stapling_verify on;
-    resolver 1.1.1.1 8.8.8.8 valid=300s;
-    resolver_timeout 5s;
+    $ocsp_stapling_block
 
     root $target_root;
     index index.html;
@@ -1392,8 +1408,17 @@ $set_real_ip_dirs
 }
 EOF
 
+    # Очищаем старые симлинки SelfSNI в sites-enabled (при смене домена), чтобы избежать конфликта default_server
+    for old_link in /etc/nginx/sites-enabled/*; do
+        if [ -e "$old_link" ] && [ "$old_link" != "/etc/nginx/sites-enabled/$target_domain" ]; then
+            if grep -q "NGINX SELFSNI FALLBACK" "$old_link" 2>/dev/null; then
+                rm -f "$old_link" 2>/dev/null || true
+            fi
+        fi
+    done
+
     ln -sf "$nginx_conf" "/etc/nginx/sites-enabled/$target_domain"
-    rm -f /etc/nginx/sites-enabled/default || true
+    rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf 2>/dev/null || true
 
     if ! nginx -t 2>/dev/null; then
         if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
@@ -1657,6 +1682,24 @@ purge_and_issue_clean_ssl() {
     fi
 
     if [ "$cb_success" -eq 1 ] && [ -f "$cert_path" ] && [ -f "$key_path" ]; then
+        # Переводим конфиг автопродления Certbot с standalone на webroot (/var/www/certbot),
+        # чтобы системный certbot.timer и cron обновляли сертификат без остановки Nginx и конфликта порта 80
+        local renewal_conf="/etc/letsencrypt/renewal/${target_domain}.conf"
+        if [ -f "$renewal_conf" ]; then
+            sed -i 's/^authenticator\s*=\s*standalone/authenticator = webroot/' "$renewal_conf" 2>/dev/null || true
+            if ! grep -q "webroot_path" "$renewal_conf" 2>/dev/null; then
+                echo "webroot_path = /var/www/certbot," >> "$renewal_conf"
+                echo "[[webroot_map]]" >> "$renewal_conf"
+                echo "${target_domain} = /var/www/certbot" >> "$renewal_conf"
+            fi
+        fi
+        mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+        cat << 'EOF' > /etc/letsencrypt/renewal-hooks/deploy/reload-nginx-selfsni.sh
+#!/usr/bin/env bash
+systemctl reload nginx 2>/dev/null || true
+EOF
+        chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx-selfsni.sh
+
         local exp_info issuer_info
         exp_info=$(openssl x509 -enddate -noout -in "$cert_path" 2>/dev/null | cut -d= -f2 || true)
         issuer_info=$(openssl x509 -issuer -noout -in "$cert_path" 2>/dev/null | cut -d= -f2- || true)
@@ -1735,7 +1778,8 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] Загрузка обновленного �
 if curl -sSL --connect-timeout 10 --max-time 35 "$BL_URL" -o "$BL_TMP"; then
     if [ -s "$BL_TMP" ] && grep -q "deny " "$BL_TMP"; then
         mv -f "$BL_TMP" "$BL_TARGET"
-        rules_count=$(grep -c "^deny " "$BL_TARGET" || echo "0")
+        rules_count=$(grep -c "^deny " "$BL_TARGET" 2>/dev/null || true)
+        rules_count="${rules_count:-0}"
         echo "[$(date '+%Y-%m-%d %H:%M:%S')] База успешно обновлена: $rules_count активных подсетей заблокировано."
 
         # Мягкая перезагрузка Nginx если служба активна
@@ -2215,19 +2259,27 @@ install_oqs_provider() {
 
 remove_oqs_provider() {
     check_root
-    log_info "Отключение постквантовой криптографии..."
+    log_info "Полное удаление OQS Provider и отключение постквантовой криптографии..."
     if [ -f "/etc/ssl/openssl.cnf.selfsni.bak" ]; then
         cp -f "/etc/ssl/openssl.cnf.selfsni.bak" "/etc/ssl/openssl.cnf"
-        log_ok "Файл /etc/ssl/openssl.cnf восстановлен."
+        log_ok "Файл /etc/ssl/openssl.cnf восстановлен из чистой резервной копии."
     else
         sed -i '/oqsprovider/d' /etc/ssl/openssl.cnf 2>/dev/null || true
     fi
     rm -f /etc/systemd/system/nginx.service.d/oqs-pqc.conf 2>/dev/null || true
+    rm -f /etc/ld.so.conf.d/oqs-pqc.conf 2>/dev/null || true
+    rm -f /usr/lib/x86_64-linux-gnu/ossl-modules/oqsprovider.so \
+          /usr/lib/aarch64-linux-gnu/ossl-modules/oqsprovider.so \
+          /usr/local/lib/ossl-modules/oqsprovider.so \
+          /usr/local/lib64/ossl-modules/oqsprovider.so \
+          /usr/lib/ossl-modules/oqsprovider.so 2>/dev/null || true
+    rm -rf /usr/local/lib/liboqs* /usr/local/lib64/liboqs* /usr/local/include/oqs /usr/local/include/oqs-provider 2>/dev/null || true
+    ldconfig 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
     ENABLE_PQC=0
     save_config
     configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
-    log_ok "Постквантовый режим отключен. Nginx работает на классическом X25519."
+    log_ok "OQS Provider полностью удален. Nginx работает на классическом X25519."
     sleep 1.5
 }
 
@@ -2929,7 +2981,8 @@ show_menu() {
         echo -e "${CYAN}│${NC}  ${BOLD}• Постквант (PQC):${NC} ${pqc_color}${pqc_str}${NC} ${DIM}[NIST ML-KEM-768]${NC}"
         local blocked_rules="0"
         if [ -f "/etc/nginx/blacklist.conf" ]; then
-            blocked_rules=$(grep -c "^deny " /etc/nginx/blacklist.conf 2>/dev/null || echo "0")
+            blocked_rules=$(grep -c "^deny " /etc/nginx/blacklist.conf 2>/dev/null || true)
+            blocked_rules="${blocked_rules:-0}"
         fi
 
         local shield_card_str="${YELLOW}Стандарт ○${NC} ${DIM}[Пункт 11 для изоляции Remnanode и BBR]${NC}"
