@@ -75,6 +75,7 @@ WEB_ROOT="${WEB_ROOT}"
 THEME_NAME="${THEME_NAME:-Random Constructor}"
 COMPANY_NAME="${COMPANY_NAME:-Default}"
 ARCHETYPE_NAME="${ARCHETYPE_NAME:-DevOps Bento Grid}"
+ENABLE_PQC="${ENABLE_PQC:-0}"
 EOF
 }
 
@@ -1445,6 +1446,11 @@ configure_nginx() {
         "
     fi
 
+    local ecdh_curves_dir="ssl_ecdh_curve X25519:prime256v1:secp384r1;"
+    if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+        ecdh_curves_dir="ssl_ecdh_curve X25519MLKEM768:X25519Kyber768Draft00:X25519:prime256v1:secp384r1;"
+    fi
+
     cat << EOF > "$nginx_conf"
 # ==============================================================================
 # NGINX SELFSNI FALLBACK
@@ -1480,6 +1486,7 @@ $set_real_ip_dirs
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    $ecdh_curves_dir
     ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
@@ -2066,6 +2073,286 @@ install_bin_link() {
         wget -qO "$BIN_LINK" "https://raw.githubusercontent.com/EikeiDev/remnawave-configs/refs/heads/main/deploy-selfsni.sh" 2>/dev/null || true
         chmod +x "$BIN_LINK" 2>/dev/null || true
     fi
+}
+
+# ==============================================================================
+# ПОСТКВАНТОВАЯ КРИПТОГРАФИЯ (X25519MLKEM768 / KYBER / OQS PROVIDER)
+# ==============================================================================
+check_pqc_active() {
+    if openssl list -providers 2>/dev/null | grep -qi "oqsprovider"; then
+        return 0
+    fi
+    if openssl list -kem-algorithms 2>/dev/null | grep -qi "MLKEM768\|ML-KEM-768"; then
+        return 0
+    fi
+    for d in /usr/lib/x86_64-linux-gnu/ossl-modules /usr/lib/aarch64-linux-gnu/ossl-modules /usr/local/lib64/ossl-modules /usr/local/lib/ossl-modules; do
+        if [ -f "$d/oqsprovider.so" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+patch_openssl_cnf() {
+    local cnf="/etc/ssl/openssl.cnf"
+    if [ ! -f "$cnf" ]; then
+        return 0
+    fi
+    [ ! -f "${cnf}.selfsni.bak" ] && cp "$cnf" "${cnf}.selfsni.bak"
+
+    python3 - << 'PYEOF'
+import sys
+
+cnf_file = "/etc/ssl/openssl.cnf"
+try:
+    with open(cnf_file, "r", encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+
+    changed = False
+    if "openssl_conf" not in text:
+        text = "openssl_conf = openssl_init\n\n" + text
+        changed = True
+
+    if "[openssl_init]" not in text:
+        text += "\n[openssl_init]\nproviders = provider_sect\n"
+        changed = True
+    elif "providers = provider_sect" not in text:
+        text = text.replace("[openssl_init]", "[openssl_init]\nproviders = provider_sect\n")
+        changed = True
+
+    if "[provider_sect]" not in text:
+        text += "\n[provider_sect]\ndefault = default_sect\noqsprovider = oqsprovider_sect\n"
+        changed = True
+    else:
+        if "oqsprovider = oqsprovider_sect" not in text:
+            text = text.replace("[provider_sect]", "[provider_sect]\noqsprovider = oqsprovider_sect\n")
+            changed = True
+
+    if "[default_sect]" not in text:
+        text += "\n[default_sect]\nactivate = 1\n"
+        changed = True
+    else:
+        part = text.split("[default_sect]")[1].split("[")[0]
+        if "activate = 1" not in part:
+            text = text.replace("[default_sect]", "[default_sect]\nactivate = 1\n")
+            changed = True
+
+    if "[oqsprovider_sect]" not in text:
+        text += "\n[oqsprovider_sect]\nactivate = 1\n"
+        changed = True
+
+    if changed:
+        with open(cnf_file, "w", encoding="utf-8") as f:
+            f.write(text)
+except Exception as e:
+    sys.stderr.write(f"Warning patching openssl.cnf: {e}\n")
+PYEOF
+}
+
+install_oqs_provider() {
+    check_root
+    echo -e "\n${CYAN}====================================================================${NC}"
+    echo -e "${CYAN}    УСТАНОВКА ПОСТКВАНТОВОГО МОДУЛЯ (NIST ML-KEM-768 / KYBER)        ${NC}"
+    echo -e "${CYAN}====================================================================${NC}"
+    log_info "Установка инструментов компиляции (cmake, ninja-build, git, libssl-dev)..."
+    apt-get update -y
+    apt-get install -y cmake ninja-build build-essential git libssl-dev python3
+
+    local build_tmp="/tmp/oqs_pqc_build_$$"
+    rm -rf "$build_tmp"
+    mkdir -p "$build_tmp"
+    cd "$build_tmp"
+
+    log_info "Загрузка и сборка легковесного liboqs (только ML-KEM-768)..."
+    if ! git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git; then
+        log_err "Не удалось загрузить liboqs с GitHub."
+        rm -rf "$build_tmp"
+        return 1
+    fi
+
+    cd liboqs
+    cmake -S . -B _build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DBUILD_SHARED_LIBS=ON \
+        -DOQS_MINIMAL_BUILD="KEM_ml_kem_768;KEM_kyber_768"
+    ninja -C _build install
+    ldconfig
+    cd "$build_tmp"
+
+    log_info "Загрузка и сборка oqs-provider для OpenSSL 3..."
+    if ! git clone --depth 1 https://github.com/open-quantum-safe/oqs-provider.git; then
+        log_err "Не удалось загрузить oqs-provider с GitHub."
+        rm -rf "$build_tmp"
+        return 1
+    fi
+
+    cd oqs-provider
+    cmake -S . -B _build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -Dliboqs_DIR=/usr/local
+    ninja -C _build install
+
+    # Копирование oqsprovider.so в системную директорию модулей
+    local ossl_dir=""
+    for d in /usr/lib/x86_64-linux-gnu/ossl-modules /usr/lib/aarch64-linux-gnu/ossl-modules /usr/local/lib64/ossl-modules /usr/local/lib/ossl-modules /usr/lib/ossl-modules; do
+        if [ -d "$d" ]; then
+            ossl_dir="$d"
+            break
+        fi
+    done
+    [ -z "$ossl_dir" ] && ossl_dir="/usr/lib/x86_64-linux-gnu/ossl-modules"
+    mkdir -p "$ossl_dir"
+
+    local built_so
+    built_so=$(find /usr/local -name "oqsprovider.so" | head -n1 || true)
+    if [ -n "$built_so" ] && [ -f "$built_so" ]; then
+        cp -f "$built_so" "$ossl_dir/oqsprovider.so"
+        chmod 755 "$ossl_dir/oqsprovider.so"
+    fi
+
+    # Интеграция в openssl.cnf
+    patch_openssl_cnf
+
+    cd /
+    rm -rf "$build_tmp"
+
+    if openssl list -providers 2>/dev/null | grep -qi "oqsprovider"; then
+        log_ok "OQS Provider успешно активирован в OpenSSL!"
+        ENABLE_PQC=1
+        save_config
+        configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+        if nginx -t; then
+            systemctl reload nginx
+            log_ok "Nginx успешно переведен на гибридный постквантовый обмен X25519MLKEM768!"
+        else
+            log_err "Nginx не смог запустить кривую X25519MLKEM768, откат на классический режим."
+            ENABLE_PQC=0
+            save_config
+            configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+            systemctl reload nginx 2>/dev/null || true
+        fi
+    else
+        log_err "Не удалось подтвердить активацию oqsprovider в OpenSSL."
+    fi
+
+    echo -e "\n${CYAN}Нажмите Enter для возврата...${NC}"
+    read -r || true
+}
+
+remove_oqs_provider() {
+    check_root
+    log_info "Отключение постквантовой криптографии..."
+    if [ -f "/etc/ssl/openssl.cnf.selfsni.bak" ]; then
+        cp -f "/etc/ssl/openssl.cnf.selfsni.bak" "/etc/ssl/openssl.cnf"
+        log_ok "Файл /etc/ssl/openssl.cnf восстановлен."
+    else
+        sed -i '/oqsprovider/d' /etc/ssl/openssl.cnf 2>/dev/null || true
+    fi
+    ENABLE_PQC=0
+    save_config
+    configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+    nginx -t && systemctl reload nginx 2>/dev/null || true
+    log_ok "Постквантовый режим отключен. Nginx работает на классическом X25519."
+    sleep 1.5
+}
+
+test_pqc_handshake() {
+    echo -e "\n${CYAN}====================================================================${NC}"
+    echo -e "${CYAN}    ТЕСТИРОВАНИЕ POST-QUANTUM РУКОПОЖАТИЯ TLS 1.3                    ${NC}"
+    echo -e "${CYAN}====================================================================${NC}"
+    log_info "Проверка согласования алгоритмов обмена ключами с 127.0.0.1:${FALLBACK_PORT}..."
+    
+    local probe_out
+    probe_out=$(timeout 5 openssl s_client -connect 127.0.0.1:"$FALLBACK_PORT" -servername "$DOMAIN" -tls1_3 2>&1 || true)
+    
+    echo "$probe_out" | grep -iE "(protocol|cipher|peer signing digest|temp key|groups|kem)" | head -n 8 || true
+    echo ""
+    
+    if echo "$probe_out" | grep -qi "X25519MLKEM768\|MLKEM\|Kyber"; then
+        echo -e "${GREEN}✔ ВЕРИФИКАЦИЯ ПРОЙДЕНА: Согласован квантово-устойчивый обмен X25519MLKEM768!${NC}"
+    else
+        if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            echo -e "${GREEN}✔ Модуль OQS активен в Nginx. При подключении современных браузеров (Chrome 124+) автоматически согласуется X25519MLKEM768.${NC}"
+        else
+            echo -e "${YELLOW}ℹ В данный момент активен классический режим X25519 (ECDH).${NC}"
+        fi
+    fi
+    echo -e "\n${CYAN}Нажмите Enter для возврата...${NC}"
+    read -r || true
+}
+
+pqc_management_menu() {
+    check_root
+    while true; do
+        clear
+        local pqc_stat_str="${RED}НЕ УСТАНОВЛЕН (Классический OpenSSL)${NC}"
+        if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            pqc_stat_str="${GREEN}АКТИВЕН И РАБОТАЕТ В NGINX ●${NC} (X25519MLKEM768 / Kyber)"
+        elif check_pqc_active; then
+            pqc_stat_str="${YELLOW}УСТАНОВЛЕН В СИСТЕМЕ, НО ВЫКЛЮЧЕН В NGINX ○${NC}"
+        fi
+
+        echo -e "${CYAN}╭────────────────────────────────────────────────────────────────────────────╮${NC}"
+        echo -e "${CYAN}│${BOLD}   ◈ ПОСТКВАНТОВАЯ КРИПТОГРАФИЯ (NIST FIPS 203 ML-KEM / KYBER)               ${CYAN}│${NC}"
+        echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────────┤${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Статус PQC:${NC}        $pqc_stat_str"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Алгоритм:${NC}          ${WHITE}X25519MLKEM768 / X25519Kyber768Draft00${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Назначение:${NC}        ${DIM}Защита от квантовых дешифраторов («Harvest Now, Decrypt Later»)${NC}"
+        echo -e "${CYAN}╰────────────────────────────────────────────────────────────────────────────╯${NC}"
+        echo ""
+        echo -e "   ${BOLD}1${NC} ❯ 🚀 Установить и активировать OQS Provider (компиляция ~30 сек)"
+        if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            echo -e "   ${BOLD}2${NC} ❯ ⏸  Временно отключить PQC в Nginx (перейти на X25519)"
+        else
+            echo -e "   ${BOLD}2${NC} ❯ ▶️  Включить PQC в Nginx (активировать кривую X25519MLKEM768)"
+        fi
+        echo -e "   ${BOLD}3${NC} ❯ 🧪 Протестировать TLS 1.3 Post-Quantum рукопожатие"
+        echo -e "   ${BOLD}4${NC} ❯ 🗑️  Полное удаление OQS Provider из системы"
+        echo -e "   ${BOLD}0${NC} ❯ ↩️  Назад в главное меню"
+        echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
+        local pqc_choice=""
+        read -rp "❯ Выберите действие [0-4]: " pqc_choice || true
+
+        case "$pqc_choice" in
+            1)
+                install_oqs_provider
+                ;;
+            2)
+                if ! check_pqc_active; then
+                    echo -e "\n${YELLOW}OQS Provider еще не установлен. Сначала выберите пункт 1.${NC}"
+                    sleep 2
+                else
+                    if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+                        ENABLE_PQC=0
+                        log_info "Переключение на классический X25519..."
+                    else
+                        ENABLE_PQC=1
+                        log_info "Включение постквантового X25519MLKEM768..."
+                    fi
+                    save_config
+                    configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+                    nginx -t && systemctl reload nginx 2>/dev/null || true
+                    log_ok "Настройка применена!"
+                    sleep 1.5
+                fi
+                ;;
+            3)
+                test_pqc_handshake
+                ;;
+            4)
+                remove_oqs_provider
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo -e "${RED}Неверный пункт.${NC}"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # Переключение PROXY Protocol (xver)
