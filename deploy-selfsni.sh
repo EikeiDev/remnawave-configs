@@ -1884,7 +1884,12 @@ patch_openssl_cnf() {
     if [ ! -f "$cnf" ]; then
         return 0
     fi
-    [ ! -f "${cnf}.selfsni.bak" ] && cp "$cnf" "${cnf}.selfsni.bak"
+    if [ ! -f "${cnf}.selfsni.bak" ]; then
+        cp "$cnf" "${cnf}.selfsni.bak"
+    elif ! grep -q "oqsprovider_sect" "${cnf}.selfsni.bak" 2>/dev/null; then
+        # Восстанавливаем чистую базу перед применением патча (лечит возможные прошлые повреждения)
+        cp -f "${cnf}.selfsni.bak" "$cnf"
+    fi
 
     # Регистрируем пути /usr/local/lib и /usr/local/lib64 для liboqs.so
     cat << 'EOF' > /etc/ld.so.conf.d/oqs-pqc.conf
@@ -1919,6 +1924,13 @@ so_path = sys.argv[1] if len(sys.argv) > 1 else ""
 try:
     with open(cnf_file, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
+
+    # 0. Лечим поврежденный комментарий на Ubuntu 24.04 (# referenced from the [provider_sect] below.)
+    text = re.sub(
+        r'#\s*referenced from the \[provider_sect\]\s*oqsprovider\s*=\s*oqsprovider_sect\s*below\.',
+        '# referenced from the [provider_sect] below.',
+        text
+    )
 
     # 1. Раскомментируем закомментированные директивы в дефолтном конфиге Ubuntu/Debian
     text = re.sub(r'^\s*#\s*(openssl_conf\s*=\s*openssl_init)', r'\1', text, flags=re.M)
@@ -2006,6 +2018,7 @@ install_oqs_provider() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DBUILD_SHARED_LIBS=ON \
+        -DOQS_BUILD_ONLY_LIB=ON \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DOQS_MINIMAL_BUILD="KEM_ml_kem_768;KEM_kyber_768"
     ninja -C _build install
@@ -2023,20 +2036,23 @@ install_oqs_provider() {
     cmake -S . -B _build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
+        -DBUILD_TESTING=OFF \
         -Dliboqs_DIR=/usr/local
     ninja -C _build install
 
-    # Копирование oqsprovider.so в системную директорию модулей OpenSSL
+    # Проверяем наличие oqsprovider.so в системной директории модулей OpenSSL
     local ossl_dir
     ossl_dir=$(openssl version -m 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)
     [ -z "$ossl_dir" ] && ossl_dir="/usr/lib/x86_64-linux-gnu/ossl-modules"
     mkdir -p "$ossl_dir"
 
-    local built_so
-    built_so=$(find /usr/local "$build_tmp" -name "oqsprovider.so" 2>/dev/null | head -n1 || true)
-    if [ -n "$built_so" ] && [ -f "$built_so" ]; then
-        cp -f "$built_so" "$ossl_dir/oqsprovider.so"
-        chmod 755 "$ossl_dir/oqsprovider.so"
+    if [ ! -f "$ossl_dir/oqsprovider.so" ]; then
+        local built_so
+        built_so=$(find /usr/local "$build_tmp" -name "oqsprovider.so" 2>/dev/null | head -n1 || true)
+        if [ -n "$built_so" ] && [ -f "$built_so" ]; then
+            cp -fL "$built_so" "$ossl_dir/oqsprovider.so"
+            chmod 755 "$ossl_dir/oqsprovider.so"
+        fi
     fi
 
     cd /
@@ -2988,8 +3004,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     check_root
 
     if load_config; then
-        # Если конфигурация уже есть — проверяем симлинк и сразу открываем меню!
-        [ -f "$BIN_LINK" ] || install_bin_link
+        # Если конфигурация уже есть — обновляем симлинк/скрипт и сразу открываем меню!
+        install_bin_link
         show_menu
     else
         # Первоначальный запуск
