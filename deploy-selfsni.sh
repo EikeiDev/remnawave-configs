@@ -1105,7 +1105,10 @@ configure_nginx() {
 
     local ecdh_curves_dir="ssl_ecdh_curve X25519:prime256v1:secp384r1;"
     if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
-        ecdh_curves_dir="ssl_ecdh_curve X25519MLKEM768:X25519Kyber768Draft00:X25519:prime256v1:secp384r1;"
+        patch_openssl_cnf 2>/dev/null || true
+        local detected_curves
+        detected_curves=$(detect_pqc_curves)
+        ecdh_curves_dir="ssl_ecdh_curve ${detected_curves};"
     fi
 
     local sni_guard_block=""
@@ -1262,9 +1265,22 @@ EOF
     ln -sf "$nginx_conf" "/etc/nginx/sites-enabled/$target_domain"
     rm -f /etc/nginx/sites-enabled/default || true
 
-    nginx -t
+    if ! nginx -t 2>/dev/null; then
+        if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            log_warn "Кривая PQC не поддерживается текущим контекстом Nginx, автоматический откат на X25519..."
+            sed -i 's/ssl_ecdh_curve .*/ssl_ecdh_curve X25519:prime256v1:secp384r1;/g' "$nginx_conf"
+            ENABLE_PQC=0
+            save_config
+        fi
+        nginx -t
+    fi
+
     if systemctl is-active --quiet nginx 2>/dev/null; then
-        systemctl reload nginx
+        if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+            systemctl restart nginx
+        else
+            systemctl reload nginx
+        fi
     else
         systemctl restart nginx
     fi
@@ -1801,6 +1817,18 @@ install_bin_link() {
 # ==============================================================================
 # ПОСТКВАНТОВАЯ КРИПТОГРАФИЯ (X25519MLKEM768 / KYBER / OQS PROVIDER)
 # ==============================================================================
+find_oqsprovider_so() {
+    local mod_dir
+    mod_dir=$(openssl version -m 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    for d in "$mod_dir" /usr/lib/x86_64-linux-gnu/ossl-modules /usr/lib/aarch64-linux-gnu/ossl-modules /usr/local/lib64/ossl-modules /usr/local/lib/ossl-modules /usr/lib/ossl-modules; do
+        if [ -n "$d" ] && [ -f "$d/oqsprovider.so" ]; then
+            echo "$d/oqsprovider.so"
+            return 0
+        fi
+    done
+    return 1
+}
+
 check_pqc_active() {
     if openssl list -providers 2>/dev/null | grep -qi "oqsprovider"; then
         return 0
@@ -1808,12 +1836,47 @@ check_pqc_active() {
     if openssl list -kem-algorithms 2>/dev/null | grep -qi "MLKEM768\|ML-KEM-768"; then
         return 0
     fi
-    for d in /usr/lib/x86_64-linux-gnu/ossl-modules /usr/lib/aarch64-linux-gnu/ossl-modules /usr/local/lib64/ossl-modules /usr/local/lib/ossl-modules; do
-        if [ -f "$d/oqsprovider.so" ]; then
-            return 0
-        fi
-    done
+    if find_oqsprovider_so >/dev/null 2>&1; then
+        return 0
+    fi
     return 1
+}
+
+detect_pqc_curves() {
+    python3 - << 'PYEOF' 2>/dev/null || echo "X25519:prime256v1:secp384r1"
+import ctypes
+import sys
+
+try:
+    libssl = ctypes.CDLL("libssl.so.3")
+    libssl.OPENSSL_init_ssl(0x00000040, None)
+    libssl.TLS_server_method.restype = ctypes.c_void_p
+    libssl.SSL_CTX_new.argtypes = [ctypes.c_void_p]
+    libssl.SSL_CTX_new.restype = ctypes.c_void_p
+    libssl.SSL_CTX_set1_curves_list.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    libssl.SSL_CTX_set1_curves_list.restype = ctypes.c_int
+
+    ctx = libssl.SSL_CTX_new(libssl.TLS_server_method())
+    if not ctx:
+        print("X25519:prime256v1:secp384r1")
+        sys.exit(0)
+
+    candidates = [
+        b"X25519MLKEM768:x25519_kyber768:X25519:prime256v1:secp384r1",
+        b"X25519MLKEM768:X25519:prime256v1:secp384r1",
+        b"x25519_mlkem768:x25519_kyber768:X25519:prime256v1:secp384r1",
+        b"x25519_mlkem768:X25519:prime256v1:secp384r1",
+        b"x25519_kyber768:X25519:prime256v1:secp384r1",
+    ]
+    for cand in candidates:
+        if libssl.SSL_CTX_set1_curves_list(ctx, cand) == 1:
+            print(cand.decode("utf-8"))
+            sys.exit(0)
+except Exception:
+    pass
+
+print("X25519:prime256v1:secp384r1")
+PYEOF
 }
 
 patch_openssl_cnf() {
@@ -1823,53 +1886,98 @@ patch_openssl_cnf() {
     fi
     [ ! -f "${cnf}.selfsni.bak" ] && cp "$cnf" "${cnf}.selfsni.bak"
 
-    python3 - << 'PYEOF'
+    # Регистрируем пути /usr/local/lib и /usr/local/lib64 для liboqs.so
+    cat << 'EOF' > /etc/ld.so.conf.d/oqs-pqc.conf
+/usr/local/lib
+/usr/local/lib64
+EOF
+    ldconfig 2>/dev/null || true
+
+    # Если oqsprovider.so собран в /usr/local, копируем его также в системный MODULESDIR OpenSSL
+    local sys_mod_dir
+    sys_mod_dir=$(openssl version -m 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    [ -z "$sys_mod_dir" ] && sys_mod_dir="/usr/lib/x86_64-linux-gnu/ossl-modules"
+    mkdir -p "$sys_mod_dir"
+
+    local existing_so
+    existing_so=$(find_oqsprovider_so || true)
+    if [ -n "$existing_so" ] && [ -f "$existing_so" ] && [ "$existing_so" != "$sys_mod_dir/oqsprovider.so" ]; then
+        cp -f "$existing_so" "$sys_mod_dir/oqsprovider.so" 2>/dev/null || true
+        chmod 755 "$sys_mod_dir/oqsprovider.so" 2>/dev/null || true
+    fi
+
+    local final_so="$sys_mod_dir/oqsprovider.so"
+    [ ! -f "$final_so" ] && final_so="${existing_so:-}"
+
+    python3 - "$final_so" << 'PYEOF'
+import re
 import sys
 
 cnf_file = "/etc/ssl/openssl.cnf"
+so_path = sys.argv[1] if len(sys.argv) > 1 else ""
+
 try:
     with open(cnf_file, "r", encoding="utf-8", errors="ignore") as f:
         text = f.read()
 
-    changed = False
-    if "openssl_conf" not in text:
+    # 1. Раскомментируем закомментированные директивы в дефолтном конфиге Ubuntu/Debian
+    text = re.sub(r'^\s*#\s*(openssl_conf\s*=\s*openssl_init)', r'\1', text, flags=re.M)
+    text = re.sub(r'^\s*#\s*(providers\s*=\s*provider_sect)', r'\1', text, flags=re.M)
+    text = re.sub(r'^\s*#\s*(default\s*=\s*default_sect)', r'\1', text, flags=re.M)
+    text = re.sub(r'^\s*#\s*(activate\s*=\s*1)', r'\1', text, flags=re.M)
+
+    # 2. Гарантируем наличие openssl_conf = openssl_init в глобальной секции
+    if not re.search(r'^\s*openssl_conf\s*=\s*openssl_init', text, re.M):
         text = "openssl_conf = openssl_init\n\n" + text
-        changed = True
 
-    if "[openssl_init]" not in text:
+    # 3. Секция [openssl_init]
+    if not re.search(r'^\s*\[openssl_init\]', text, re.M):
         text += "\n[openssl_init]\nproviders = provider_sect\n"
-        changed = True
-    elif "providers = provider_sect" not in text:
-        text = text.replace("[openssl_init]", "[openssl_init]\nproviders = provider_sect\n")
-        changed = True
+    else:
+        m = re.search(r'(^\s*\[openssl_init\][^\[]*)', text, re.M | re.S)
+        if m and not re.search(r'^\s*providers\s*=\s*provider_sect', m.group(1), re.M):
+            text = re.sub(r'(^\s*\[openssl_init\])', r'\1\nproviders = provider_sect', text, count=1, flags=re.M)
 
-    if "[provider_sect]" not in text:
+    # 4. Секция [provider_sect]
+    if not re.search(r'^\s*\[provider_sect\]', text, re.M):
         text += "\n[provider_sect]\ndefault = default_sect\noqsprovider = oqsprovider_sect\n"
-        changed = True
     else:
-        if "oqsprovider = oqsprovider_sect" not in text:
-            text = text.replace("[provider_sect]", "[provider_sect]\noqsprovider = oqsprovider_sect\n")
-            changed = True
+        m = re.search(r'(^\s*\[provider_sect\][^\[]*)', text, re.M | re.S)
+        if m:
+            sec = m.group(1)
+            if not re.search(r'^\s*default\s*=\s*default_sect', sec, re.M):
+                text = re.sub(r'(^\s*\[provider_sect\])', r'\1\ndefault = default_sect', text, count=1, flags=re.M)
+            if not re.search(r'^\s*oqsprovider\s*=\s*oqsprovider_sect', sec, re.M):
+                text = re.sub(r'(^\s*\[provider_sect\])', r'\1\noqsprovider = oqsprovider_sect', text, count=1, flags=re.M)
 
-    if "[default_sect]" not in text:
+    # 5. Секция [default_sect] — ОБЯЗАТЕЛЬНО activate = 1 (иначе отключается классический X25519!)
+    if not re.search(r'^\s*\[default_sect\]', text, re.M):
         text += "\n[default_sect]\nactivate = 1\n"
-        changed = True
     else:
-        part = text.split("[default_sect]")[1].split("[")[0]
-        if "activate = 1" not in part:
-            text = text.replace("[default_sect]", "[default_sect]\nactivate = 1\n")
-            changed = True
+        m = re.search(r'(^\s*\[default_sect\][^\[]*)', text, re.M | re.S)
+        if m and not re.search(r'^\s*activate\s*=\s*1', m.group(1), re.M):
+            text = re.sub(r'(^\s*\[default_sect\])', r'\1\nactivate = 1', text, count=1, flags=re.M)
 
-    if "[oqsprovider_sect]" not in text:
-        text += "\n[oqsprovider_sect]\nactivate = 1\n"
-        changed = True
+    # 6. Перезаписываем чистую секцию [oqsprovider_sect] с явным путем к модулю
+    text = re.sub(r'^\s*\[oqsprovider_sect\][^\[]*', '', text, flags=re.M | re.S)
+    oqs_sec = "\n[oqsprovider_sect]\nactivate = 1\n"
+    if so_path:
+        oqs_sec += f"module = {so_path}\n"
+    text = text.rstrip() + "\n" + oqs_sec
 
-    if changed:
-        with open(cnf_file, "w", encoding="utf-8") as f:
-            f.write(text)
+    with open(cnf_file, "w", encoding="utf-8") as f:
+        f.write(text)
 except Exception as e:
     sys.stderr.write(f"Warning patching openssl.cnf: {e}\n")
 PYEOF
+
+    # Гарантируем, что systemd-сервис Nginx видит OPENSSL_CONF
+    mkdir -p /etc/systemd/system/nginx.service.d
+    cat << 'EOF' > /etc/systemd/system/nginx.service.d/oqs-pqc.conf
+[Service]
+Environment="OPENSSL_CONF=/etc/ssl/openssl.cnf"
+EOF
+    systemctl daemon-reload 2>/dev/null || true
 }
 
 install_oqs_provider() {
@@ -1886,7 +1994,7 @@ install_oqs_provider() {
     mkdir -p "$build_tmp"
     cd "$build_tmp"
 
-    log_info "Загрузка и сборка легковесного liboqs (только ML-KEM-768)..."
+    log_info "Загрузка и сборка легковесного liboqs (ML-KEM-768 + Kyber768)..."
     if ! git clone --depth 1 https://github.com/open-quantum-safe/liboqs.git; then
         log_err "Не удалось загрузить liboqs с GitHub."
         rm -rf "$build_tmp"
@@ -1898,6 +2006,7 @@ install_oqs_provider() {
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX=/usr/local \
         -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DOQS_MINIMAL_BUILD="KEM_ml_kem_768;KEM_kyber_768"
     ninja -C _build install
     ldconfig
@@ -1917,47 +2026,37 @@ install_oqs_provider() {
         -Dliboqs_DIR=/usr/local
     ninja -C _build install
 
-    # Копирование oqsprovider.so в системную директорию модулей
-    local ossl_dir=""
-    for d in /usr/lib/x86_64-linux-gnu/ossl-modules /usr/lib/aarch64-linux-gnu/ossl-modules /usr/local/lib64/ossl-modules /usr/local/lib/ossl-modules /usr/lib/ossl-modules; do
-        if [ -d "$d" ]; then
-            ossl_dir="$d"
-            break
-        fi
-    done
+    # Копирование oqsprovider.so в системную директорию модулей OpenSSL
+    local ossl_dir
+    ossl_dir=$(openssl version -m 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)
     [ -z "$ossl_dir" ] && ossl_dir="/usr/lib/x86_64-linux-gnu/ossl-modules"
     mkdir -p "$ossl_dir"
 
     local built_so
-    built_so=$(find /usr/local -name "oqsprovider.so" | head -n1 || true)
+    built_so=$(find /usr/local "$build_tmp" -name "oqsprovider.so" 2>/dev/null | head -n1 || true)
     if [ -n "$built_so" ] && [ -f "$built_so" ]; then
         cp -f "$built_so" "$ossl_dir/oqsprovider.so"
         chmod 755 "$ossl_dir/oqsprovider.so"
     fi
 
-    # Интеграция в openssl.cnf
-    patch_openssl_cnf
-
     cd /
     rm -rf "$build_tmp"
 
-    if openssl list -providers 2>/dev/null | grep -qi "oqsprovider"; then
-        log_ok "OQS Provider успешно активирован в OpenSSL!"
+    # Интеграция в openssl.cnf и проверка кривой
+    patch_openssl_cnf
+
+    local active_curves
+    active_curves=$(detect_pqc_curves)
+    if [[ "$active_curves" == *"MLKEM"* ]] || [[ "$active_curves" == *"mlkem"* ]] || [[ "$active_curves" == *"kyber"* ]]; then
+        log_ok "OQS Provider успешно активирован в OpenSSL! Доступные группы: $active_curves"
         ENABLE_PQC=1
         save_config
         configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
-        if nginx -t; then
-            systemctl reload nginx
-            log_ok "Nginx успешно переведен на гибридный постквантовый обмен X25519MLKEM768!"
-        else
-            log_err "Nginx не смог запустить кривую X25519MLKEM768, откат на классический режим."
-            ENABLE_PQC=0
-            save_config
-            configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
-            systemctl reload nginx 2>/dev/null || true
-        fi
+        log_ok "Nginx успешно переведен на гибридный постквантовый обмен ($active_curves)!"
     else
-        log_err "Не удалось подтвердить активацию oqsprovider в OpenSSL."
+        log_err "Не удалось инициализировать гибридную кривую в OpenSSL (доступно: $active_curves)."
+        ENABLE_PQC=0
+        save_config
     fi
 
     echo -e "\n${CYAN}Нажмите Enter для возврата...${NC}"
@@ -1973,10 +2072,11 @@ remove_oqs_provider() {
     else
         sed -i '/oqsprovider/d' /etc/ssl/openssl.cnf 2>/dev/null || true
     fi
+    rm -f /etc/systemd/system/nginx.service.d/oqs-pqc.conf 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
     ENABLE_PQC=0
     save_config
     configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
-    nginx -t && systemctl reload nginx 2>/dev/null || true
     log_ok "Постквантовый режим отключен. Nginx работает на классическом X25519."
     sleep 1.5
 }
@@ -1985,22 +2085,35 @@ test_pqc_handshake() {
     echo -e "\n${CYAN}====================================================================${NC}"
     echo -e "${CYAN}    ТЕСТИРОВАНИЕ POST-QUANTUM РУКОПОЖАТИЯ TLS 1.3                    ${NC}"
     echo -e "${CYAN}====================================================================${NC}"
-    log_info "Проверка согласования алгоритмов обмена ключами с 127.0.0.1:${FALLBACK_PORT}..."
-    
-    local probe_out
-    probe_out=$(timeout 5 openssl s_client -connect 127.0.0.1:"$FALLBACK_PORT" -servername "$DOMAIN" -tls1_3 2>&1 || true)
-    
-    echo "$probe_out" | grep -iE "(protocol|cipher|peer signing digest|temp key|groups|kem)" | head -n 8 || true
-    echo ""
-    
-    if echo "$probe_out" | grep -qi "X25519MLKEM768\|MLKEM\|Kyber"; then
-        echo -e "${GREEN}✔ ВЕРИФИКАЦИЯ ПРОЙДЕНА: Согласован квантово-устойчивый обмен X25519MLKEM768!${NC}"
+    log_info "Проверка зарегистрированных провайдеров OpenSSL и рукопожатия с 127.0.0.1:${FALLBACK_PORT}..."
+
+    echo -e "\n${BOLD}1. Активные провайдеры OpenSSL:${NC}"
+    openssl list -providers 2>/dev/null | grep -E "name:|status:" || true
+
+    local active_curves
+    active_curves=$(detect_pqc_curves)
+    echo -e "\n${BOLD}2. Проверенная цепочка кривых SSL_CTX:${NC} ${GREEN}${active_curves}${NC}"
+
+    echo -e "\n${BOLD}3. Тестовое подключение к Nginx (${DOMAIN}:${FALLBACK_PORT}):${NC}"
+    local curl_out=""
+    local primary_pqc="${active_curves%%:*}"
+    if [ "${USE_PROXY_FLAG:-0}" -eq 1 ]; then
+        curl_out=$(curl -vksI --haproxy-protocol --curves "$primary_pqc" --resolve "${DOMAIN}:${FALLBACK_PORT}:127.0.0.1" "https://${DOMAIN}:${FALLBACK_PORT}/" 2>&1 || true)
     else
-        if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
-            echo -e "${GREEN}✔ Модуль OQS активен в Nginx. При подключении современных браузеров (Chrome 124+) автоматически согласуется X25519MLKEM768.${NC}"
+        curl_out=$(curl -vksI --curves "$primary_pqc" --resolve "${DOMAIN}:${FALLBACK_PORT}:127.0.0.1" "https://${DOMAIN}:${FALLBACK_PORT}/" 2>&1 || true)
+    fi
+
+    echo "$curl_out" | grep -iE "(SSL connection using|Server certificate|subject:|HTTP/)" | head -n 6 || true
+    echo ""
+
+    if [[ "$primary_pqc" == *"MLKEM"* ]] || [[ "$primary_pqc" == *"mlkem"* ]] || [[ "$primary_pqc" == *"kyber"* ]]; then
+        if echo "$curl_out" | grep -qi "SSL connection using TLSv1.3"; then
+            echo -e "${GREEN}✔ ВЕРИФИКАЦИЯ ПРОЙДЕНА: Выполнено боевое рукопожатие TLS 1.3 на постквантовой кривой ${primary_pqc}!${NC}"
         else
-            echo -e "${YELLOW}ℹ В данный момент активен классический режим X25519 (ECDH).${NC}"
+            echo -e "${YELLOW}ℹ Кривая ${primary_pqc} загружена в OpenSSL. Убедитесь, что PQC включен в пункте 2.${NC}"
         fi
+    else
+        echo -e "${YELLOW}ℹ В данный момент активен классический режим X25519 (ECDH).${NC}"
     fi
     echo -e "\n${CYAN}Нажмите Enter для возврата...${NC}"
     read -r || true
@@ -2012,7 +2125,7 @@ pqc_management_menu() {
         clear
         local pqc_stat_str="${RED}НЕ УСТАНОВЛЕН (Классический OpenSSL)${NC}"
         if check_pqc_active && [ "${ENABLE_PQC:-0}" -eq 1 ]; then
-            pqc_stat_str="${GREEN}АКТИВЕН И РАБОТАЕТ В NGINX ●${NC} (X25519MLKEM768 / Kyber)"
+            pqc_stat_str="${GREEN}АКТИВЕН И РАБОТАЕТ В NGINX ●${NC} (X25519MLKEM768)"
         elif check_pqc_active; then
             pqc_stat_str="${YELLOW}УСТАНОВЛЕН В СИСТЕМЕ, НО ВЫКЛЮЧЕН В NGINX ○${NC}"
         fi
@@ -2021,7 +2134,7 @@ pqc_management_menu() {
         echo -e "${CYAN}│${BOLD}   ◈ ПОСТКВАНТОВАЯ КРИПТОГРАФИЯ (NIST FIPS 203 ML-KEM / KYBER)               ${CYAN}│${NC}"
         echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────────┤${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Статус PQC:${NC}        $pqc_stat_str"
-        echo -e "${CYAN}│${NC}  ${BOLD}• Алгоритм:${NC}          ${WHITE}X25519MLKEM768 / X25519Kyber768Draft00${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Алгоритм:${NC}          ${WHITE}X25519MLKEM768 (NIST ML-KEM-768 + X25519)${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Назначение:${NC}        ${DIM}Защита от квантовых дешифраторов («Harvest Now, Decrypt Later»)${NC}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────────────────────────────╯${NC}"
         echo ""
@@ -2050,15 +2163,30 @@ pqc_management_menu() {
                     if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
                         ENABLE_PQC=0
                         log_info "Переключение на классический X25519..."
+                        save_config
+                        configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+                        log_ok "Постквантовый обмен в Nginx отключен."
+                        sleep 1.5
                     else
-                        ENABLE_PQC=1
-                        log_info "Включение постквантового X25519MLKEM768..."
+                        log_info "Активация oqsprovider в /etc/ssl/openssl.cnf и проверка кривых..."
+                        patch_openssl_cnf
+                        local test_curves
+                        test_curves=$(detect_pqc_curves)
+                        if [[ "$test_curves" == *"MLKEM"* ]] || [[ "$test_curves" == *"mlkem"* ]] || [[ "$test_curves" == *"kyber"* ]]; then
+                            ENABLE_PQC=1
+                            save_config
+                            log_info "Включение постквантовой цепочки ($test_curves) в Nginx..."
+                            configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+                            if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+                                log_ok "Постквантовая защита ($test_curves) успешно активирована в Nginx!"
+                            fi
+                        else
+                            log_err "Модуль oqsprovider не отдал гибридную кривую X25519MLKEM768."
+                            log_info "Попробуйте пересобрать провайдер через пункт 1."
+                        fi
+                        echo -e "\nНажмите Enter для продолжения..."
+                        read -r || true
                     fi
-                    save_config
-                    configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
-                    nginx -t && systemctl reload nginx 2>/dev/null || true
-                    log_ok "Настройка применена!"
-                    sleep 1.5
                 fi
                 ;;
             3)
