@@ -93,9 +93,9 @@ generate_website() {
 
     mkdir -p "$target_root/assets"
 
-    # Выбор архетипа шлюза [1-5]
+    # Выбор архетипа шлюза [1-5] (с защитой от нечислового ввода при set -e)
     local arch_id
-    if [ "$selected_archetype" -eq 1 ] || [ "$selected_archetype" -lt 1 ] || [ "$selected_archetype" -gt 6 ]; then
+    if ! [[ "${selected_archetype:-1}" =~ ^[2-6]$ ]]; then
         arch_id=$(( (RANDOM % 5) + 1 ))
     else
         # Преобразуем выбор пользователя (2->1, 3->2, 4->3, 5->4, 6->5)
@@ -1295,6 +1295,9 @@ configure_nginx() {
 # Internal Fallback Port: $target_port
 # ==============================================================================
 
+# Защита от L7 HTTP-флуда и агрессивного брутфорса эндпоинтов
+limit_req_zone \$binary_remote_addr zone=selfsni_limit:10m rate=25r/s;
+
 # 1. Защита порта 80 от сканирования по голому IP (мгновенный сброс соединения 444)
 server {
     listen 80 default_server;
@@ -1346,6 +1349,9 @@ $set_real_ip_dirs
 
     # Черный список активных сканеров ТСПУ / Censys / Shodan (C24Be AS Network List)
     include /etc/nginx/blacklist.conf;
+
+    # Лимит частоты запросов (защита от L7-флуда без ложных срабатываний на ассетах)
+    limit_req zone=selfsni_limit burst=50 nodelay;
 
     ssl_certificate /etc/letsencrypt/live/$target_domain/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$target_domain/privkey.pem;
@@ -1552,10 +1558,10 @@ view_active_probes() {
             echo -e "---------+-----------------"
             awk '$1 !~ /^(127\.0\.0\.1|::1)$/ {print $1}' "$access_log" 2>/dev/null | sort | uniq -c | sort -nr | head -n 10 | while read -r count ip; do
                 printf " %-7s | %-16s\n" "$count" "$ip"
-            done
+            done || true
 
             echo -e "\n${BOLD}Последние запросы со стороны внешних IP:${NC}"
-            awk '$1 !~ /^(127\.0\.0\.1|::1)$/ {print "[" $4 " " $5 "] " $1 " -> " $6 " " $7 " (" $9 ")"}' "$access_log" 2>/dev/null | tail -n 8
+            awk '$1 !~ /^(127\.0\.0\.1|::1)$/ {print "[" $4 " " $5 "] " $1 " -> " $6 " " $7 " (" $9 ")"}' "$access_log" 2>/dev/null | tail -n 8 || true
         else
             echo -e "${GREEN}Внешних сканирований пока не зафиксировано (все чисто).${NC}"
         fi
@@ -1648,6 +1654,13 @@ purge_and_issue_clean_ssl() {
     # Принудительно глушим любой процесс на порту 80
     if command -v fuser &>/dev/null; then
         fuser -k 80/tcp 2>/dev/null || true
+    fi
+
+    # Если активен UFW, гарантируем открытие портов 80/tcp (ACME) и 443/tcp+udp (Xray Reality / Hysteria 2)
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+        ufw allow 443/udp >/dev/null 2>&1 || true
     fi
 
     log_warn "Принудительная вычистка всех старых сертификатов для $target_domain..."
@@ -1743,7 +1756,7 @@ EOF
         read -rp "Ваш выбор [1-4, по умолчанию: 1]: " fail_act || true
         fail_act="${fail_act:-1}"
 
-        if [ "$fail_act" -eq 1 ]; then
+        if [ "$fail_act" = "1" ]; then
             log_info "Генерация чистого fallback SSL сертификата..."
             mkdir -p "/etc/letsencrypt/live/$target_domain"
             openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
@@ -1752,12 +1765,12 @@ EOF
                 -subj "/CN=$target_domain/O=Enterprise Edge Infrastructure" 2>/dev/null
             log_ok "Чистый Fallback SSL сертификат создан! SelfSNI сможет работать."
             return 0
-        elif [ "$fail_act" -eq 2 ]; then
+        elif [ "$fail_act" = "2" ]; then
             if issue_zerossl_cert "$target_domain" "$target_email" && [ -f "$cert_path" ]; then
                 log_ok "Чистый SSL сертификат ZeroSSL успешно получен!"
                 return 0
             fi
-        elif [ "$fail_act" -eq 3 ]; then
+        elif [ "$fail_act" = "3" ]; then
             if issue_letsencrypt_cert "$target_domain" "$target_email" && [ -f "$cert_path" ]; then
                 log_ok "Чистый SSL сертификат Let's Encrypt успешно получен!"
                 return 0
@@ -1864,6 +1877,10 @@ install_selfsni() {
     read -rp "Порт для локального fallback Nginx [по умолчанию: 9443]: " port_input || true
     FALLBACK_PORT="${port_input:-9443}"
     FALLBACK_PORT=$(echo "$FALLBACK_PORT" | tr -d '[:space:]')
+    if ! [[ "$FALLBACK_PORT" =~ ^[0-9]+$ ]] || [ "$FALLBACK_PORT" -lt 1024 ] || [ "$FALLBACK_PORT" -gt 65535 ]; then
+        log_warn "Некорректный или системный порт ($FALLBACK_PORT). Установлен безопасный порт по умолчанию: 9443."
+        FALLBACK_PORT="9443"
+    fi
 
     local proxy_proto_input=""
     read -rp "Использовать PROXY Protocol (xver) от Xray? [Y/n, рекомендуется: Y]: " proxy_proto_input || true
@@ -1984,9 +2001,9 @@ install_selfsni() {
     local ca_input=""
     read -rp "Выберите вариант [1-3, по умолчанию: 1]: " ca_input || true
     local chosen_ca="auto"
-    if [ "${ca_input:-1}" -eq 2 ]; then
+    if [ "${ca_input:-1}" = "2" ]; then
         chosen_ca="zerossl"
-    elif [ "${ca_input:-1}" -eq 3 ]; then
+    elif [ "${ca_input:-1}" = "3" ]; then
         chosen_ca="letsencrypt"
     fi
 
@@ -2929,7 +2946,7 @@ run_tspu_exposure_audit() {
             verdict="${YELLOW}DNS (Убедитесь что не публичный)${NC}"
         fi
         printf "   %-5s | %-5s | %-20s | %b\n" "$proto" "$port" "${clean_proc:0:20}" "$verdict"
-    done | sort -u
+    done | sort -u || true
     echo -e "${CYAN}==============================================================================${NC}"
 }
 
@@ -3063,7 +3080,7 @@ show_menu() {
 
         local ng_ver_str="N/A"
         if command -v nginx &>/dev/null; then
-            ng_ver_str=$(nginx -v 2>&1 | awk -F'/' '{print $2}' | awk '{print $1}')
+            ng_ver_str=$(nginx -v 2>&1 | awk -F'/' '{print $2}' | awk '{print $1}' || true)
         fi
 
         echo -e "${CYAN}╭────────────────────────────────────────────────────────────────────────────╮${NC}"
@@ -3220,7 +3237,7 @@ EOF
                 local re_ca=""
                 read -rp "Ваш выбор [1-3, по умолчанию: 1]: " re_ca || true
                 local selected_ca="auto"
-                if [ "${re_ca:-1}" -eq 2 ]; then selected_ca="zerossl"; elif [ "${re_ca:-1}" -eq 3 ]; then selected_ca="letsencrypt"; fi
+                if [ "${re_ca:-1}" = "2" ]; then selected_ca="zerossl"; elif [ "${re_ca:-1}" = "3" ]; then selected_ca="letsencrypt"; fi
 
                 purge_and_issue_clean_ssl "$DOMAIN" "${EMAIL:-admin@$DOMAIN}" "$selected_ca"
                 if systemctl is-active --quiet nginx 2>/dev/null; then
