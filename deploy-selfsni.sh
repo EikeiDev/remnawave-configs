@@ -210,6 +210,7 @@ EOF
 </html>
 EOF
 
+    chmod -R a+rX "$target_root" 2>/dev/null || true
     log_ok "Шлюз-маскировка успешно сгенерирован (Стиль: $ARCHETYPE_NAME, Бренд: $COMPANY_NAME)!"
 }
 
@@ -1051,7 +1052,7 @@ EOF
 }
 
 # ==============================================================================
-# ФУНКЦИЯ КОНФИГУРАЦИИ NGINX (С ЗАЩИТОЙ ОТ IP-СКАНЕРОВ И УТЕЧКИ SNI)
+# ОФИЦИАЛЬНЫЙ РЕПОЗИТОРИЙ NGINX MAINLINE (NGINX.ORG) И КОНФИГУРАЦИЯ
 # ==============================================================================
 nginx_supports_reject_handshake() {
     local ver
@@ -1062,6 +1063,126 @@ nginx_supports_reject_handshake() {
     if [ "${major:-1}" -eq 1 ] && [ "${minor:-18}" -gt 19 ]; then return 0; fi
     if [ "${major:-1}" -eq 1 ] && [ "${minor:-18}" -eq 19 ] && [ "${patch:-0}" -ge 4 ]; then return 0; fi
     return 1
+}
+
+nginx_supports_http2_directive() {
+    local ver
+    ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || echo "1.18.0")
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$ver"
+    if [ "${major:-1}" -gt 1 ]; then return 0; fi
+    if [ "${major:-1}" -eq 1 ] && [ "${minor:-18}" -gt 25 ]; then return 0; fi
+    if [ "${major:-1}" -eq 1 ] && [ "${minor:-18}" -eq 25 ] && [ "${patch:-0}" -ge 1 ]; then return 0; fi
+    return 1
+}
+
+ensure_nginx_main_conf() {
+    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/nginx/conf.d /var/log/nginx
+    rm -f /etc/nginx/conf.d/default.conf /etc/nginx/sites-enabled/default 2>/dev/null || true
+
+    if [ -f /etc/nginx/nginx.conf ]; then
+        # В официальном пакете nginx.org по умолчанию есть только include /etc/nginx/conf.d/*.conf;
+        # Гарантируем подключение /etc/nginx/sites-enabled/* в блоке http {}
+        python3 - << 'PYEOF' 2>/dev/null || true
+import re
+
+p = "/etc/nginx/nginx.conf"
+with open(p, "r", encoding="utf-8", errors="ignore") as f:
+    txt = f.read()
+
+changed = False
+if "sites-enabled" not in txt:
+    if "include /etc/nginx/conf.d/*.conf;" in txt:
+        txt = txt.replace(
+            "include /etc/nginx/conf.d/*.conf;",
+            "include /etc/nginx/conf.d/*.conf;\n    include /etc/nginx/sites-enabled/*;",
+            1
+        )
+        changed = True
+    else:
+        txt = re.sub(r'(\bhttp\s*\{)', r'\1\n    include /etc/nginx/sites-enabled/*;', txt, count=1)
+        changed = True
+
+if changed:
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(txt)
+PYEOF
+    fi
+}
+
+install_official_nginx() {
+    check_root
+    log_info "Подключение официального репозитория Nginx Mainline (nginx.org)..."
+    apt-get update -y
+
+    local os_id="ubuntu"
+    local codename=""
+    if [ -f /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        os_id="${ID:-ubuntu}"
+        codename="${VERSION_CODENAME:-}"
+    fi
+
+    if [ "$os_id" = "debian" ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg2 ca-certificates lsb-release debian-archive-keyring 2>/dev/null || \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg ca-certificates lsb-release debian-archive-keyring
+    else
+        os_id="ubuntu"
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg2 ca-certificates lsb-release ubuntu-keyring 2>/dev/null || \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl gnupg ca-certificates lsb-release ubuntu-keyring
+    fi
+
+    if [ -z "$codename" ] && command -v lsb_release &>/dev/null; then
+        codename=$(lsb_release -cs 2>/dev/null || true)
+    fi
+
+    mkdir -p /usr/share/keyrings
+    local tmp_key="/tmp/nginx_signing_$$.key"
+    if curl -fsSL https://nginx.org/keys/nginx_signing.key -o "$tmp_key"; then
+        gpg --dearmor --yes -o /usr/share/keyrings/nginx-archive-keyring.gpg "$tmp_key"
+        chmod 644 /usr/share/keyrings/nginx-archive-keyring.gpg
+        rm -f "$tmp_key"
+
+        # Верификация отпечатка ключа nginx.org (573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62)
+        local fp_out
+        fp_out=$(gpg --dry-run --quiet --no-keyring --import --import-options import-show /usr/share/keyrings/nginx-archive-keyring.gpg 2>&1 || true)
+        if echo "$fp_out" | grep -q "573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62"; then
+            log_ok "Отпечаток официального ключа Nginx подтвержден (573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62)."
+        fi
+
+        echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] https://nginx.org/packages/mainline/${os_id} ${codename} nginx" \
+            > /etc/apt/sources.list.d/nginx.list
+
+        printf "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" \
+            > /etc/apt/preferences.d/99nginx
+
+        apt-get update -y || true
+    else
+        rm -f "$tmp_key"
+        log_warn "Не удалось загрузить ключ nginx.org, используется системный репозиторий."
+    fi
+
+    # Если ранее стояли стандартные разрозненные пакеты Ubuntu/Debian (nginx-common, nginx-core, libnginx-mod-*),
+    # аккуратно удаляем их перед установкой монолитного пакета nginx с nginx.org (конфиги в /etc/nginx/sites-available сохраняются)
+    if dpkg -l 2>/dev/null | grep -qE '^ii\s+(nginx-common|nginx-core|nginx-full|nginx-light|nginx-extras)'; then
+        log_info "Миграция со стандартного пакета дистрибутива на официальный движок nginx.org..."
+        systemctl stop nginx 2>/dev/null || true
+        DEBIAN_FRONTEND=noninteractive apt-get remove -y nginx nginx-common nginx-core nginx-full nginx-light nginx-extras 'libnginx-mod-*' python3-certbot-nginx 2>/dev/null || true
+    fi
+
+    log_info "Установка свежего движка Nginx Mainline и зависимостей (Certbot, OpenSSL)..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -o Dpkg::Options::="--force-confnew" \
+        nginx certbot curl openssl sed
+
+    ensure_nginx_main_conf
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable nginx 2>/dev/null || true
+
+    local ng_ver
+    ng_ver=$(nginx -v 2>&1 | awk -F'/' '{print $2}' || echo "unknown")
+    log_ok "Установлен официальный движок Nginx Mainline: v${ng_ver}"
 }
 
 ensure_dummy_fallback_cert() {
@@ -1084,8 +1205,8 @@ configure_nginx() {
     local use_proxy="$3"
     local target_root="${4:-${WEB_ROOT:-/var/www/$target_domain}}"
 
-    # Гарантируем наличие файла blacklist.conf и технического сертификата-заглушки
-    mkdir -p /etc/nginx
+    # Гарантируем структуру /etc/nginx, blacklist.conf и технический сертификат-заглушку
+    ensure_nginx_main_conf
     if [ ! -f /etc/nginx/blacklist.conf ]; then
         echo "# Initial scanner blacklist stub" > /etc/nginx/blacklist.conf
     fi
@@ -1118,6 +1239,13 @@ configure_nginx() {
         sni_guard_block="ssl_certificate ${CONFIG_DIR}/default_dummy.crt;
     ssl_certificate_key ${CONFIG_DIR}/default_dummy.key;
     return 444;"
+    fi
+
+    local listen_http2_inline="http2"
+    local http2_standalone_dir=""
+    if nginx_supports_http2_directive; then
+        listen_http2_inline=""
+        http2_standalone_dir="http2 on;"
     fi
 
     cat << EOF > "$nginx_conf"
@@ -1153,7 +1281,8 @@ server {
 
 # 3. Защита Fallback-порта от сканирования по IP без знания SNI (скрытие сертификата и домена)
 server {
-    listen 127.0.0.1:$target_port ssl http2 $proxy_proto_dir default_server;
+    listen 127.0.0.1:$target_port ssl $listen_http2_inline $proxy_proto_dir default_server;
+    $http2_standalone_dir
     server_name _;
 
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -1169,7 +1298,8 @@ server {
 
 # 4. Основной защищенный шлюз маскировки (отвечает ТОЛЬКО при точном совпадении SNI = $target_domain)
 server {
-    listen 127.0.0.1:$target_port ssl http2 $proxy_proto_dir;
+    listen 127.0.0.1:$target_port ssl $listen_http2_inline $proxy_proto_dir;
+    $http2_standalone_dir
     server_name $target_domain;
 $set_real_ip_dirs
 
@@ -1717,10 +1847,8 @@ install_selfsni() {
         fi
     fi
 
-    # Установка пакетов
-    log_info "Установка зависимостей (Nginx, Certbot)..."
-    apt-get update -y
-    apt-get install -y nginx certbot python3-certbot-nginx curl openssl sed
+    # Установка пакетов (Official Nginx Mainline + Certbot)
+    install_official_nginx
 
     echo -e "\n${MAGENTA}ВЫБОР ЦЕНТРА СЕРТИФИКАЦИИ SSL (CA):${NC}"
     echo -e "1) ${GREEN}[Рекомендуется] Auto${NC}: Let's Encrypt (при сбое TCP/Connection Reset — авто-переход на ZeroSSL)"
@@ -2771,10 +2899,15 @@ show_menu() {
             fi
         fi
 
+        local ng_ver_str="N/A"
+        if command -v nginx &>/dev/null; then
+            ng_ver_str=$(nginx -v 2>&1 | awk -F'/' '{print $2}' | awk '{print $1}')
+        fi
+
         echo -e "${CYAN}╭────────────────────────────────────────────────────────────────────────────╮${NC}"
         echo -e "${CYAN}│${BOLD}   ◈ SELFSNI CONTROL CORE  ${NC}${DIM}•  Nginx Decoy Engine for Xray Reality/XHTTP     ${CYAN}│${NC}"
         echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────────┤${NC}"
-        echo -e "${CYAN}│${NC}  ${BOLD}• Статус:${NC}        ${status_color}${status_str} ●${NC} ${DIM}[Nginx HTTP/2 + TLS 1.3 + OCSP]${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Статус:${NC}        ${status_color}${status_str} ●${NC} ${DIM}[Nginx v${ng_ver_str} • HTTP/2 + TLS 1.3]${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Домен SNI:${NC}     ${WHITE}${DOMAIN:-Не установлен}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Локальный сокет:${NC} ${WHITE}127.0.0.1:${FALLBACK_PORT:-9443}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• PROXY Protocol:${NC} ${proxy_color}${proxy_str}${NC} ${DIM}[${proxy_note}]${NC}"
@@ -2841,13 +2974,14 @@ show_menu() {
         echo -e "  ${BOLD}14${NC} ❯ ▶️  Запустить Nginx"
         echo -e "  ${BOLD}15${NC} ❯ 📝 Редактировать vhost конфигурацию (/etc/nginx/sites-available/...)"
         echo -e "  ${BOLD}16${NC} ❯ ⚡ Переключить PROXY Protocol [${proxy_toggle_hint}]"
+        echo -e "  ${BOLD}17${NC} ❯ 🚀 Обновить движок Nginx до Official Mainline (nginx.org) ${DIM}[v${ng_ver_str}]${NC}"
         echo ""
         echo -e " ${BOLD}${RED}[ 5 ] СИСТЕМА${NC}"
-        echo -e "  ${BOLD}17${NC} ❯ 🔁 Переустановить / Сменить домен"
-        echo -e "  ${BOLD}18${NC} ❯ 🗑️  Полное удаление SelfSNI"
+        echo -e "  ${BOLD}18${NC} ❯ 🔁 Переустановить / Сменить домен"
+        echo -e "  ${BOLD}19${NC} ❯ 🗑️  Полное удаление SelfSNI"
         echo -e "   ${BOLD}0${NC} ❯ 🚪 Выход в консоль"
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
-        read -rp "❯ Выберите действие [0-18]: " choice || true
+        read -rp "❯ Выберите действие [0-19]: " choice || true
 
         case "$choice" in
             1)
@@ -2965,10 +3099,21 @@ EOF
                 toggle_proxy_protocol
                 ;;
             17)
+                log_info "Обновление движка Nginx до Official Mainline (nginx.org)..."
+                install_official_nginx
+                if [ "${ENABLE_PQC:-0}" -eq 1 ]; then
+                    patch_openssl_cnf 2>/dev/null || true
+                fi
+                configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "$WEB_ROOT"
+                log_ok "Движок Nginx успешно обновлен до актуальной ветки Mainline!"
+                echo -e "\nНажмите Enter для возврата в меню..."
+                read -r || true
+                ;;
+            18)
                 install_selfsni
                 load_config || true
                 ;;
-            18)
+            19)
                 echo -e "\n${RED}ВЫ УВЕРЕНЫ, ЧТО ХОТИТЕ УДАЛИТЬ SELFSNI?${NC}"
                 read -rp "Введите 'yes' для подтверждения удаления: " confirm_del || true
                 if [ "$confirm_del" = "yes" ]; then
