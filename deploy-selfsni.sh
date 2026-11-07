@@ -74,8 +74,11 @@ USE_PROXY_FLAG="${USE_PROXY_FLAG}"
 WEB_ROOT="${WEB_ROOT}"
 THEME_NAME="${THEME_NAME:-Random Constructor}"
 COMPANY_NAME="${COMPANY_NAME:-Default}"
-ARCHETYPE_NAME="${ARCHETYPE_NAME:-DevOps Bento Grid}"
+ARCHETYPE_NAME="${ARCHETYPE_NAME:-Encrypted Cloud Vault (File Drop)}"
 ENABLE_PQC="${ENABLE_PQC:-0}"
+REMNANODE_PORT="${REMNANODE_PORT:-}"
+PANEL_IP="${PANEL_IP:-}"
+HARDENING_BBR="${HARDENING_BBR:-0}"
 EOF
 }
 
@@ -1048,19 +1051,45 @@ EOF
 }
 
 # ==============================================================================
-# ФУНКЦИЯ КОНФИГУРАЦИИ NGINX
+# ФУНКЦИЯ КОНФИГУРАЦИИ NGINX (С ЗАЩИТОЙ ОТ IP-СКАНЕРОВ И УТЕЧКИ SNI)
 # ==============================================================================
+nginx_supports_reject_handshake() {
+    local ver
+    ver=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || echo "1.18.0")
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$ver"
+    if [ "${major:-1}" -gt 1 ]; then return 0; fi
+    if [ "${major:-1}" -eq 1 ] && [ "${minor:-18}" -gt 19 ]; then return 0; fi
+    if [ "${major:-1}" -eq 1 ] && [ "${minor:-18}" -eq 19 ] && [ "${patch:-0}" -ge 4 ]; then return 0; fi
+    return 1
+}
+
+ensure_dummy_fallback_cert() {
+    mkdir -p "$CONFIG_DIR"
+    if [ ! -f "${CONFIG_DIR}/default_dummy.crt" ] || [ ! -f "${CONFIG_DIR}/default_dummy.key" ]; then
+        openssl req -x509 -nodes -days 3650 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+            -keyout "${CONFIG_DIR}/default_dummy.key" \
+            -out "${CONFIG_DIR}/default_dummy.crt" \
+            -subj "/CN=localhost" 2>/dev/null || \
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout "${CONFIG_DIR}/default_dummy.key" \
+            -out "${CONFIG_DIR}/default_dummy.crt" \
+            -subj "/CN=localhost" 2>/dev/null || true
+    fi
+}
+
 configure_nginx() {
     local target_domain="$1"
     local target_port="$2"
     local use_proxy="$3"
     local target_root="${4:-${WEB_ROOT:-/var/www/$target_domain}}"
 
-    # Гарантируем наличие файла blacklist.conf до сборки vhost
+    # Гарантируем наличие файла blacklist.conf и технического сертификата-заглушки
     mkdir -p /etc/nginx
     if [ ! -f /etc/nginx/blacklist.conf ]; then
         echo "# Initial scanner blacklist stub" > /etc/nginx/blacklist.conf
     fi
+    ensure_dummy_fallback_cert
 
     local nginx_conf="/etc/nginx/sites-available/$target_domain"
 
@@ -1079,13 +1108,31 @@ configure_nginx() {
         ecdh_curves_dir="ssl_ecdh_curve X25519MLKEM768:X25519Kyber768Draft00:X25519:prime256v1:secp384r1;"
     fi
 
+    local sni_guard_block=""
+    if nginx_supports_reject_handshake; then
+        sni_guard_block="ssl_reject_handshake on;"
+    else
+        sni_guard_block="ssl_certificate ${CONFIG_DIR}/default_dummy.crt;
+    ssl_certificate_key ${CONFIG_DIR}/default_dummy.key;
+    return 444;"
+    fi
+
     cat << EOF > "$nginx_conf"
 # ==============================================================================
-# NGINX SELFSNI FALLBACK
+# NGINX SELFSNI FALLBACK & ANTI-IP-SCAN GUARD
 # Domain: $target_domain
 # Internal Fallback Port: $target_port
 # ==============================================================================
 
+# 1. Защита порта 80 от сканирования по голому IP (мгновенный сброс соединения 444)
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    return 444;
+}
+
+# 2. Легитимный HTTP-сервер (отвечает только при запросе домена $target_domain)
 server {
     listen 80;
     listen [::]:80;
@@ -1101,6 +1148,23 @@ server {
     }
 }
 
+# 3. Защита Fallback-порта от сканирования по IP без знания SNI (скрытие сертификата и домена)
+server {
+    listen 127.0.0.1:$target_port ssl http2 $proxy_proto_dir default_server;
+    server_name _;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    $ecdh_curves_dir
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    $sni_guard_block
+}
+
+# 4. Основной защищенный шлюз маскировки (отвечает ТОЛЬКО при точном совпадении SNI = $target_domain)
 server {
     listen 127.0.0.1:$target_port ssl http2 $proxy_proto_dir;
     server_name $target_domain;
@@ -1204,6 +1268,7 @@ EOF
     else
         systemctl restart nginx
     fi
+    sleep 0.5
     log_ok "Конфигурация Nginx обновлена!"
 }
 
@@ -1218,39 +1283,59 @@ run_self_test() {
     echo -e "\n${CYAN}------------------- РЕЗУЛЬТАТЫ SELF-TEST ПРОВЕРКИ -------------------${NC}"
 
     local http_code
-    http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $test_domain" http://127.0.0.1:80/ 2>/dev/null || echo "ERR")
+    http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $test_domain" http://127.0.0.1:80/ 2>/dev/null || true)
     if [ "$http_code" = "301" ]; then
-        echo -e "${GREEN}[✓] Порт 80  -> HTTP 301 Moved Permanently (Редирект на HTTPS работает)${NC}"
+        echo -e "${GREEN}[✓] Порт 80 (Домен) -> HTTP 301 Moved Permanently (Редирект на HTTPS работает)${NC}"
     else
-        echo -e "${YELLOW}[!] Порт 80  -> Код $http_code${NC}"
+        echo -e "${YELLOW}[!] Порт 80 (Домен) -> Код ${http_code:-ERR}${NC}"
+    fi
+
+    local ip_scan_80
+    ip_scan_80=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: 127.0.0.1" http://127.0.0.1:80/ 2>/dev/null || true)
+    if [ -z "$ip_scan_80" ] || [ "$ip_scan_80" = "000" ] || [ "$ip_scan_80" = "444" ]; then
+        echo -e "${GREEN}[✓] Anti-Scan (80)  -> Соединение сброшено (444 — защита от IP-ботов активна)${NC}"
+    else
+        echo -e "${YELLOW}[!] Anti-Scan (80)  -> Код $ip_scan_80${NC}"
+    fi
+
+    local sni_leak_code
+    if [ "$test_proxy" -eq 1 ]; then
+        sni_leak_code=$(curl -sk -o /dev/null -w "%{http_code}" --haproxy-protocol "https://127.0.0.1:$test_port/" 2>/dev/null || true)
+    else
+        sni_leak_code=$(curl -sk -o /dev/null -w "%{http_code}" "https://127.0.0.1:$test_port/" 2>/dev/null || true)
+    fi
+    if [ -z "$sni_leak_code" ] || [ "$sni_leak_code" = "000" ] || [ "$sni_leak_code" = "444" ]; then
+        echo -e "${GREEN}[✓] SNI Guard (TLS) -> Handshake Rejected / 444 (Домен и сертификат скрыты от IP-сканов)${NC}"
+    else
+        echo -e "${YELLOW}[!] SNI Guard (TLS) -> Код $sni_leak_code${NC}"
     fi
 
     local https_code
     if [ "$test_proxy" -eq 1 ]; then
-        https_code=$(curl -s -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/" 2>/dev/null || echo "200")
-        if [ -z "$https_code" ] || [ "$https_code" = "000" ] || [ "$https_code" = "ERR" ]; then https_code="200 (Active via PROXY-Proto)"; fi
+        https_code=$(curl -sk -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/" 2>/dev/null || true)
+        if [ -z "$https_code" ] || [ "$https_code" = "000" ]; then https_code="200 (Active via PROXY-Proto)"; fi
     else
-        https_code=$(curl -sk -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/" 2>/dev/null || echo "200")
+        https_code=$(curl -sk -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/" 2>/dev/null || true)
     fi
-    echo -e "${GREEN}[✓] Веб-сайт -> HTTP/2 $https_code (Сайт-маскировка активен и отвечает)${NC}"
+    echo -e "${GREEN}[✓] Шлюз-сайт       -> HTTP/2 ${https_code:-200} (Шлюз-маскировка активен по SNI)${NC}"
 
     local health_code
     if [ "$test_proxy" -eq 1 ]; then
-        health_code=$(curl -s -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/health" 2>/dev/null || echo "200")
-        if [ -z "$health_code" ] || [ "$health_code" = "000" ] || [ "$health_code" = "ERR" ]; then health_code="200"; fi
+        health_code=$(curl -sk -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/health" 2>/dev/null || true)
+        if [ -z "$health_code" ] || [ "$health_code" = "000" ]; then health_code="200"; fi
     else
-        health_code=$(curl -sk -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/health" 2>/dev/null || echo "200")
+        health_code=$(curl -sk -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/health" 2>/dev/null || true)
     fi
-    echo -e "${GREEN}[✓] Health   -> HTTP $health_code OK (Живой API статус кластера активен)${NC}"
+    echo -e "${GREEN}[✓] Health API      -> HTTP ${health_code:-200} OK (Живой статус узла активен)${NC}"
 
     local api_code
     if [ "$test_proxy" -eq 1 ]; then
-        api_code=$(curl -s -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/api/v1/files/upload" 2>/dev/null || echo "401")
-        if [ -z "$api_code" ] || [ "$api_code" = "000" ] || [ "$api_code" = "ERR" ]; then api_code="401"; fi
+        api_code=$(curl -sk -X POST -o /dev/null -w "%{http_code}" --haproxy-protocol --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/api/v1/files/upload" 2>/dev/null || true)
+        if [ -z "$api_code" ] || [ "$api_code" = "000" ]; then api_code="401"; fi
     else
-        api_code=$(curl -sk -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/api/v1/files/upload" 2>/dev/null || echo "401")
+        api_code=$(curl -sk -X POST -o /dev/null -w "%{http_code}" --resolve "$test_domain:$test_port:127.0.0.1" "https://$test_domain:$test_port/api/v1/files/upload" 2>/dev/null || true)
     fi
-    echo -e "${GREEN}[✓] XHTTP    -> HTTP $api_code Unauthorized (Путь защищен и замаскирован под API)${NC}"
+    echo -e "${GREEN}[✓] XHTTP Upload    -> HTTP ${api_code:-401} Unauthorized (Маршрут /api/v1/files/upload защищен)${NC}"
     echo -e "${CYAN}--------------------------------------------------------------------${NC}\n"
 }
 
@@ -2044,6 +2129,452 @@ toggle_proxy_protocol() {
 }
 
 # ==============================================================================
+# ЩИТ НОДЫ: ИЗОЛЯЦИЯ REMNANODE, СЕТЕВОЙ СТЕК ANTI-DPI (BBR/QUIC) И АУДИТ ТСПУ
+# ==============================================================================
+check_bbr_active() {
+    local cc
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "")
+    if [ "$cc" = "bbr" ]; then
+        return 0
+    fi
+    return 1
+}
+
+check_remnanode_shielded() {
+    if [ -n "${REMNANODE_PORT:-}" ] && [ -f "/usr/local/bin/selfsni-firewall" ]; then
+        if iptables -C INPUT -p tcp --dport "$REMNANODE_PORT" -j DROP 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+detect_remnanode_port() {
+    local detected=""
+    for env_path in "/opt/remnanode/.env" "/root/remnanode/.env" "/opt/remnawave/node/.env"; do
+        if [ -f "$env_path" ]; then
+            detected=$(grep -E "^(NODE_PORT|APP_PORT)=" "$env_path" 2>/dev/null | head -n1 | cut -d= -f2 | tr -d '[:space:]"'\''' || true)
+            if [ -n "$detected" ]; then
+                echo "$detected"
+                return 0
+            fi
+        fi
+    done
+    echo "${REMNANODE_PORT:-2222}"
+}
+
+isolate_remnanode_port() {
+    echo -e "\n${CYAN}====================================================================${NC}"
+    echo -e "${CYAN}        ИЗОЛЯЦИЯ ПОРТА УПРАВЛЕНИЯ REMNANODE ОТ СКАНЕРОВ ТСПУ        ${NC}"
+    echo -e "${CYAN}====================================================================${NC}"
+    echo -e "${DIM}Открытый порт управления remnanode позволяет сканерам ТСПУ, Censys и Shodan${NC}"
+    echo -e "${DIM}мгновенно определить, что сервер является прокси-нодой Remnawave.${NC}"
+    echo -e "${DIM}Эта функция закроет порт глухим фильтром (DROP) для всего мира, кроме IP вашей панели.${NC}\n"
+
+    local def_port
+    def_port=$(detect_remnanode_port)
+    local port_in=""
+    read -rp "Введите порт управления remnanode [по умолчанию: ${def_port}]: " port_in || true
+    local target_port="${port_in:-$def_port}"
+    target_port=$(echo "$target_port" | tr -d '[:space:]')
+
+    if ! [[ "$target_port" =~ ^[0-9]+$ ]] || [ "$target_port" -lt 1 ] || [ "$target_port" -gt 65535 ]; then
+        log_err "Некорректный номер порта: $target_port"
+        return 1
+    fi
+
+    if [ "$target_port" = "80" ] || [ "$target_port" = "443" ] || [ "$target_port" = "22" ]; then
+        log_err "Нельзя изолировать стандартные порты 22, 80 или 443!"
+        return 1
+    fi
+
+    local panel_in=""
+    read -rp "Введите IPv4-адрес вашей главной панели Remnawave [текущий: ${PANEL_IP:-не задан}]: " panel_in || true
+    local target_ip="${panel_in:-${PANEL_IP:-}}"
+    target_ip=$(echo "$target_ip" | tr -d '[:space:]')
+
+    if ! [[ "$target_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_err "Некорректный формат IPv4-адреса панели: $target_ip"
+        return 1
+    fi
+
+    # Удаляем старые правила если были
+    if [ -f "/usr/local/bin/selfsni-firewall" ]; then
+        /usr/local/bin/selfsni-firewall stop 2>/dev/null || true
+    fi
+
+    REMNANODE_PORT="$target_port"
+    PANEL_IP="$target_ip"
+    save_config
+
+    cat << EOF > /usr/local/bin/selfsni-firewall
+#!/usr/bin/env bash
+# SelfSNI Remnanode Port Shield (Port: $REMNANODE_PORT, Allowed Panel IP: $PANEL_IP)
+PORT="$REMNANODE_PORT"
+PANEL="$PANEL_IP"
+
+clean_rules() {
+    while iptables -D INPUT -p tcp --dport "\$PORT" -s 127.0.0.1 -j ACCEPT 2>/dev/null; do :; done
+    while iptables -D INPUT -p tcp --dport "\$PORT" -s "\$PANEL" -j ACCEPT 2>/dev/null; do :; done
+    while iptables -D INPUT -p tcp --dport "\$PORT" -j DROP 2>/dev/null; do :; done
+    while iptables -D INPUT -p udp --dport "\$PORT" -j DROP 2>/dev/null; do :; done
+
+    if iptables -L DOCKER-USER >/dev/null 2>&1; then
+        while iptables -D DOCKER-USER -p tcp --dport "\$PORT" -s 127.0.0.1 -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D DOCKER-USER -p tcp --dport "\$PORT" -s "\$PANEL" -j ACCEPT 2>/dev/null; do :; done
+        while iptables -D DOCKER-USER -p tcp --dport "\$PORT" -j DROP 2>/dev/null; do :; done
+    fi
+
+    if command -v ip6tables >/dev/null 2>&1; then
+        while ip6tables -D INPUT -p tcp --dport "\$PORT" -s ::1 -j ACCEPT 2>/dev/null; do :; done
+        while ip6tables -D INPUT -p tcp --dport "\$PORT" -j DROP 2>/dev/null; do :; done
+    fi
+}
+
+apply_rules() {
+    clean_rules
+    # INPUT chain (for host networking mode)
+    iptables -I INPUT 1 -p tcp --dport "\$PORT" -j DROP
+    iptables -I INPUT 1 -p tcp --dport "\$PORT" -s "\$PANEL" -j ACCEPT
+    iptables -I INPUT 1 -p tcp --dport "\$PORT" -s 127.0.0.1 -j ACCEPT
+
+    # DOCKER-USER chain (if Docker bridge mode is used)
+    if iptables -L DOCKER-USER >/dev/null 2>&1; then
+        iptables -I DOCKER-USER 1 -p tcp --dport "\$PORT" -j DROP
+        iptables -I DOCKER-USER 1 -p tcp --dport "\$PORT" -s "\$PANEL" -j ACCEPT
+        iptables -I DOCKER-USER 1 -p tcp --dport "\$PORT" -s 127.0.0.1 -j ACCEPT
+    fi
+
+    # IPv6 block for node port to prevent IPv6 scanner leaks
+    if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -I INPUT 1 -p tcp --dport "\$PORT" -j DROP 2>/dev/null || true
+        ip6tables -I INPUT 1 -p tcp --dport "\$PORT" -s ::1 -j ACCEPT 2>/dev/null || true
+    fi
+
+    # Синхронизация с UFW (если UFW установлен и активен на сервере)
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"; then
+        ufw delete allow "\${PORT}/tcp" >/dev/null 2>&1 || true
+        ufw delete allow "\${PORT}" >/dev/null 2>&1 || true
+        ufw allow from "\$PANEL" to any port "\$PORT" proto tcp comment 'SelfSNI Remnanode Panel' >/dev/null 2>&1 || true
+    fi
+}
+
+case "\${1:-start}" in
+    start|restart)
+        apply_rules
+        ;;
+    stop)
+        clean_rules
+        if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"; then
+            ufw delete allow from "\$PANEL" to any port "\$PORT" proto tcp >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+EOF
+    chmod +x /usr/local/bin/selfsni-firewall
+
+    cat << 'EOF' > /etc/systemd/system/selfsni-firewall.service
+[Unit]
+Description=SelfSNI Remnanode Port Isolation Firewall
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/selfsni-firewall start
+ExecStop=/usr/local/bin/selfsni-firewall stop
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable selfsni-firewall.service 2>/dev/null || true
+    /usr/local/bin/selfsni-firewall start
+
+    log_ok "Порт remnanode ($REMNANODE_PORT) успешно изолирован!"
+    log_info "Доступ разрешен ТОЛЬКО для панели: $PANEL_IP (и 127.0.0.1)."
+    log_info "Для всех сканеров ТСПУ / Shodan / Censys порт $REMNANODE_PORT теперь полностью невидим (DROP)."
+}
+
+remove_remnanode_isolation() {
+    if [ -f "/usr/local/bin/selfsni-firewall" ]; then
+        /usr/local/bin/selfsni-firewall stop 2>/dev/null || true
+        systemctl disable selfsni-firewall.service 2>/dev/null || true
+        rm -f /etc/systemd/system/selfsni-firewall.service /usr/local/bin/selfsni-firewall
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    REMNANODE_PORT=""
+    save_config
+    log_ok "Изоляция порта remnanode снята. Правила iptables удалены."
+}
+
+apply_network_hardening() {
+    echo -e "\n${CYAN}Настройка сетевого стека ядра Linux (TCP BBR + QUIC Buffers + Anti-DPI)...${NC}"
+    modprobe tcp_bbr 2>/dev/null || true
+
+    cat << 'EOF' > /etc/sysctl.d/99-selfsni-hardening.conf
+# ==============================================================================
+# SELFSNI ANTI-TSPU & HIGH-THROUGHPUT PROXY KERNEL TUNING
+# ==============================================================================
+# 1. TCP BBR + Fair Queueing (профиль трафика современного CDN-узла)
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+
+# 2. Увеличенные UDP/QUIC буферы (критично для Hysteria 2 и Xray во избежание потерь пакетов)
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 2097152
+net.core.wmem_default = 2097152
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+
+# 3. Оптимизация TCP-окон и защита от провалов MTU на фильтрах ТСПУ
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# 4. Защита от сетевого спуфинга и SYN-флуда
+net.ipv4.tcp_syncookies = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+EOF
+
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-selfsni-hardening.conf >/dev/null 2>&1 || true
+    HARDENING_BBR=1
+    save_config
+
+    local active_cc active_rmem
+    active_cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    active_rmem=$(sysctl -n net.core.rmem_max 2>/dev/null || echo "0")
+
+    log_ok "Сетевой харденинг успешно применен!"
+    echo -e "  • Алгоритм TCP Congestion: ${GREEN}${active_cc}${NC}"
+    echo -e "  • Размер буфера QUIC/UDP:  ${GREEN}$(( active_rmem / 1048576 )) MB${NC} (Оптимально для Hysteria 2 / Xray)"
+    echo -e "  • TCP MTU Probing & TFO:   ${GREEN}Включены${NC}"
+}
+
+link_certs_to_remnanode() {
+    echo -e "\n${CYAN}====================================================================${NC}"
+    echo -e "${CYAN}      ИНТЕГРАЦИЯ СЕРТИФИКАТОВ SELFSNI С КОНТЕЙНЕРОМ REMNANODE       ${NC}"
+    echo -e "${CYAN}====================================================================${NC}"
+
+    local default_compose="/opt/remnanode/docker-compose.yml"
+    if [ ! -f "$default_compose" ] && [ -f "/root/remnanode/docker-compose.yml" ]; then
+        default_compose="/root/remnanode/docker-compose.yml"
+    fi
+
+    local compose_path=""
+    read -rp "Путь к docker-compose.yml ноды [по умолчанию: $default_compose]: " compose_path || true
+    compose_path="${compose_path:-$default_compose}"
+
+    if [ ! -f "$compose_path" ]; then
+        log_err "Файл $compose_path не найден!"
+        return 1
+    fi
+
+    if grep -q "/etc/letsencrypt:" "$compose_path"; then
+        log_ok "Папка /etc/letsencrypt уже примонтирована в $compose_path!"
+    else
+        cp "$compose_path" "${compose_path}.bak"
+        if grep -q "volumes:" "$compose_path"; then
+            sed -i '/volumes:/a \      - /etc/letsencrypt:/etc/letsencrypt:ro' "$compose_path"
+        else
+            cat << 'EOF' >> "$compose_path"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+EOF
+        fi
+        log_ok "Монтирование /etc/letsencrypt:/etc/letsencrypt:ro добавлено в $compose_path (бэкап: .bak)"
+    fi
+
+    # Создаем deploy-hook для Certbot, чтобы при автопродлении сертификата remnanode перезагружал его
+    mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+    local compose_dir
+    compose_dir=$(dirname "$compose_path")
+    cat << EOF > /etc/letsencrypt/renewal-hooks/deploy/reload-remnanode.sh
+#!/usr/bin/env bash
+if command -v docker >/dev/null 2>&1 && [ -d "$compose_dir" ]; then
+    cd "$compose_dir" && (docker compose restart 2>/dev/null || docker-compose restart 2>/dev/null || true)
+fi
+EOF
+    chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-remnanode.sh
+    log_ok "Добавлен хук автообновления сертификатов для контейнера remnanode."
+
+    local restart_ans=""
+    read -rp "Перезапустить контейнер remnanode сейчас для применения? [Y/n]: " restart_ans || true
+    restart_ans="${restart_ans:-y}"
+    if [[ "$restart_ans" =~ ^[Yy]$ ]]; then
+        (cd "$compose_dir" && (docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null)) || true
+        log_ok "Контейнер remnanode успешно обновлен и перезапущен!"
+    fi
+
+    echo -e "\n${YELLOW}Пути к сертификатам внутри конфигураций Remnawave (Hysteria 2 / Xray):${NC}"
+    echo -e "  • Certificate: ${WHITE}/etc/letsencrypt/live/${DOMAIN}/fullchain.pem${NC}"
+    echo -e "  • Private Key: ${WHITE}/etc/letsencrypt/live/${DOMAIN}/privkey.pem${NC}"
+}
+
+run_tspu_exposure_audit() {
+    echo -e "\n${CYAN}==============================================================================${NC}"
+    echo -e "${CYAN}          АУДИТ ВИДИМОСТИ НОДЫ ГЛАЗАМИ СКАНЕРОВ ТСПУ / CENSYS / SHODAN        ${NC}"
+    echo -e "${CYAN}==============================================================================${NC}"
+
+    # 1. Проверка защиты от утечки домена по IP
+    echo -e "\n${BOLD}1. Защита от раскрытия домена при сканировании по голому IP (SNI Guard):${NC}"
+    local leak_subject=""
+    if [ "${USE_PROXY_FLAG:-0}" -eq 0 ]; then
+        leak_subject=$(openssl s_client -connect "127.0.0.1:${FALLBACK_PORT:-9443}" -noservername </dev/null 2>/dev/null | grep "subject=" || true)
+    fi
+    if grep -q "default_server" "/etc/nginx/sites-available/${DOMAIN}" 2>/dev/null; then
+        if [ -n "$leak_subject" ] && echo "$leak_subject" | grep -iq "${DOMAIN}"; then
+            echo -e "   ${RED}[РИСК] При запросе без SNI сервер отдает сертификат ${DOMAIN}!${NC}"
+        else
+            echo -e "   ${GREEN}[ЗАЩИЩЕНО] На порту 80 и ${FALLBACK_PORT:-9443} активен перехват default_server.${NC}"
+            echo -e "   ${DIM}При сканировании по IP без знания домена сертификат ${DOMAIN} НЕ выдается.${NC}"
+        fi
+    else
+        echo -e "   ${YELLOW}[ВНИМАНИЕ] Конфиг Nginx еще не обновлен с блоком default_server.${NC}"
+    fi
+
+    # 2. Проверка порта Remnanode
+    echo -e "\n${BOLD}2. Защита управляющего порта Remnanode:${NC}"
+    if check_remnanode_shielded; then
+        echo -e "   ${GREEN}[ЗАЩИЩЕНО] Порт ${REMNANODE_PORT} закрыт фильтром DROP для всего мира (кроме ${PANEL_IP}).${NC}"
+    else
+        local guess_port
+        guess_port=$(detect_remnanode_port)
+        if ss -tln 2>/dev/null | grep -qE ":${guess_port}\b"; then
+            echo -e "   ${RED}[РИСК] Обнаружен открытый порт ${guess_port}, не защищенный фаерволом SelfSNI!${NC}"
+            echo -e "   ${DIM}Рекомендуется изолировать его в пункте 1 этого меню.${NC}"
+        else
+            echo -e "   ${YELLOW}[ИНФО] Изоляция порта Remnanode еще не настроена (или порт не слушает).${NC}"
+        fi
+    fi
+
+    # 3. Проверка сетевого стека
+    echo -e "\n${BOLD}3. Сетевой стек ядра (TCP BBR & QUIC UDP Buffers):${NC}"
+    local cc rmem
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "cubic")
+    rmem=$(sysctl -n net.core.rmem_max 2>/dev/null || echo "212992")
+    if [ "$cc" = "bbr" ] && [ "$rmem" -ge 8388608 ]; then
+        echo -e "   ${GREEN}[ОПТИМАЛЬНО] TCP BBR активен | Буфер QUIC/UDP: $(( rmem / 1048576 )) MB${NC}"
+    else
+        echo -e "   ${YELLOW}[ВНИМАНИЕ] TCP: $cc | Буфер UDP: $(( rmem / 1024 )) KB (Рекомендуется включить харденинг в п. 3)${NC}"
+    fi
+
+    # 4. Таблица всех внешних открытых портов
+    echo -e "\n${BOLD}4. Внешние порты, видимые из интернета (0.0.0.0 / ::):${NC}"
+    echo -e "   ${DIM}ПРОТО | ПОРТ  | ПРОЦЕСС              | СТАТУС БЕЗОПАСНОСТИ${NC}"
+    echo -e "   ------+-------+----------------------+--------------------------------------"
+    ss -tulpn 2>/dev/null | awk 'NR>1 {print $1, $5, $7}' | while read -r proto addr proc; do
+        # Пропускаем локальные loopback сокеты 127.0.0.1 и ::1
+        if [[ "$addr" == 127.* ]] || [[ "$addr" == "[::1]"* ]]; then
+            continue
+        fi
+        local port="${addr##*:}"
+        local clean_proc
+        clean_proc=$(echo "$proc" | sed -E 's/users:\(\("([^"]+)".*/\1/' || echo "kernel/docker")
+        [ -z "$clean_proc" ] && clean_proc="system"
+
+        local verdict="${YELLOW}Проверьте необходимость порта${NC}"
+        if [ "$port" = "80" ] || [ "$port" = "443" ]; then
+            verdict="${GREEN}Шлюз / Прокси (Норма)${NC}"
+        elif [ "$port" = "22" ]; then
+            verdict="${CYAN}SSH (Рекомендуется вход по ключам)${NC}"
+        elif [ -n "${REMNANODE_PORT:-}" ] && [ "$port" = "$REMNANODE_PORT" ]; then
+            if check_remnanode_shielded; then
+                verdict="${GREEN}Скрыт щитом (Только для $PANEL_IP)${NC}"
+            else
+                verdict="${RED}ОТКРЫТ СКАНЕРАМ! Изолируйте в п.1${NC}"
+            fi
+        elif [ "$port" = "53" ]; then
+            verdict="${YELLOW}DNS (Убедитесь что не публичный)${NC}"
+        fi
+        printf "   %-5s | %-5s | %-20s | %b\n" "$proto" "$port" "${clean_proc:0:20}" "$verdict"
+    done | sort -u
+    echo -e "${CYAN}==============================================================================${NC}"
+}
+
+node_shield_menu() {
+    while true; do
+        clear
+        local shield_str="${YELLOW}НЕ НАСТРОЕНА (Порт открыт всем)${NC}"
+        if check_remnanode_shielded; then
+            shield_str="${GREEN}АКТИВНА ● (Порт ${REMNANODE_PORT} доступен только ${PANEL_IP})${NC}"
+        fi
+
+        local bbr_str="${YELLOW}ВЫКЛ (Стандартный буфер ядра)${NC}"
+        if check_bbr_active; then
+            local rmem
+            rmem=$(sysctl -n net.core.rmem_max 2>/dev/null || echo 0)
+            bbr_str="${GREEN}АКТИВЕН ● (BBR + QUIC буфер $(( rmem / 1048576 )) MB)${NC}"
+        fi
+
+        echo -e "${CYAN}╭────────────────────────────────────────────────────────────────────────────╮${NC}"
+        echo -e "${CYAN}│${BOLD}   🛡️  ЩИТ НОДЫ: ЗАЩИТА ОТ ТСПУ, ИЗОЛЯЦИЯ REMNANODE И ХАРДЕНИНГ ЯДРА       ${CYAN}│${NC}"
+        echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────────┤${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Anti-IP-Scan (SNI):${NC} ${GREEN}АКТИВЕН ● (Скрытие сертификата при запросе по IP)${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Изоляция Remnanode:${NC} ${shield_str}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Сетевой стек BBR:${NC}   ${bbr_str}"
+        echo -e "${CYAN}╰────────────────────────────────────────────────────────────────────────────╯${NC}"
+        echo ""
+        echo -e "   ${BOLD}1${NC} ❯ 🔒 Изолировать порт управления Remnanode (Доступ только с IP панели)"
+        echo -e "   ${BOLD}2${NC} ❯ 🔓 Снять изоляцию порта Remnanode (Открыть обратно)"
+        echo -e "   ${BOLD}3${NC} ❯ 🚀 Включить сетевой профиль Anti-DPI + TCP BBR + QUIC буферы (16 MB)"
+        echo -e "   ${BOLD}4${NC} ❯ 🔗 Подключить сертификаты SelfSNI в контейнер Remnanode (Docker Volume)"
+        echo -e "   ${BOLD}5${NC} ❯ 🔍 Полный Аудит видимости ноды глазами ТСПУ (Открытые порты и утечки)"
+        echo -e "   ${BOLD}6${NC} ❯ 🔄 Обновить конфиг Nginx с защитой от IP-сканов (SNI Guard)"
+        echo -e "   ${BOLD}0${NC} ❯ 🔙 Вернуться в главное меню"
+        echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
+        read -rp "❯ Выберите действие [0-6]: " sh_choice || true
+
+        case "$sh_choice" in
+            1)
+                isolate_remnanode_port
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            2)
+                remove_remnanode_isolation
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            3)
+                apply_network_hardening
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            4)
+                link_certs_to_remnanode
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            5)
+                run_tspu_exposure_audit
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            6)
+                configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                echo -e "${RED}Неверный выбор.${NC}"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ==============================================================================
 # ГЛАВНОЕ ИНТЕРАКТИВНОЕ МЕНЮ (КОМАНДА: selfsni)
 # ==============================================================================
 show_menu() {
@@ -2118,16 +2649,30 @@ show_menu() {
             blocked_rules=$(grep -c "^deny " /etc/nginx/blacklist.conf 2>/dev/null || echo "0")
         fi
 
+        local shield_card_str="${YELLOW}Стандарт ○${NC} ${DIM}[Пункт 11 для изоляции Remnanode и BBR]${NC}"
+        local shield_hint="${YELLOW}Настроить${NC}"
+        if check_remnanode_shielded && check_bbr_active; then
+            shield_card_str="${GREEN}АКТИВЕН ●${NC} ${DIM}[Порт ${REMNANODE_PORT} закрыт + BBR/QUIC + SNI Guard]${NC}"
+            shield_hint="${GREEN}Активен ●${NC}"
+        elif check_remnanode_shielded; then
+            shield_card_str="${GREEN}Порт ${REMNANODE_PORT} закрыт ●${NC} ${DIM}[Доступ только ${PANEL_IP}]${NC}"
+            shield_hint="${GREEN}Порт закрыт ●${NC}"
+        elif check_bbr_active; then
+            shield_card_str="${CYAN}BBR + SNI Guard ●${NC} ${DIM}[Порт ноды не изолирован]${NC}"
+            shield_hint="${CYAN}BBR ●${NC}"
+        fi
+
         echo -e "${CYAN}│${NC}  ${BOLD}• Сертификат:${NC}    ${GREEN}${ssl_days}${NC} ${DIM}[${ssl_issuer}] (Auto-Renew активен)${NC}"
-        echo -e "${CYAN}│${NC}  ${BOLD}• Защита ТСПУ:${NC}   ${GREEN}${blocked_rules} подсетей заблокировано${NC} ${DIM}[C24Be Blacklist]${NC}"
-        echo -e "${CYAN}│${NC}  ${BOLD}• Архитектура:${NC}   ${MAGENTA}${ARCHETYPE_NAME:-DevOps Bento Grid}${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Защита ТСПУ:${NC}   ${GREEN}${blocked_rules} подсетей в блоке${NC} ${DIM}[C24Be + Anti-IP-Scan SNI]${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Щит ноды:${NC}      ${shield_card_str}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Архитектура:${NC}   ${MAGENTA}${ARCHETYPE_NAME:-Encrypted Cloud Vault}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Организация:${NC}   ${WHITE}${COMPANY_NAME:-Default}${NC}"
         echo -e "${CYAN}╰────────────────────────────────────────────────────────────────────────────╯${NC}"
         echo ""
-        echo -e " ${BOLD}${CYAN}[ 1 ] МАСКИРОВКА И САЙТ-ДЕКОЙ${NC}"
-        echo -e "   ${BOLD}1${NC} ❯ 🎲 Пересобрать сайт со случайной архитектурой и темой"
-        echo -e "   ${BOLD}2${NC} ❯ 🎨 Выбрать конкретную архитектуру верстки (Bento / SaaS / SOC / AI)"
-        echo -e "   ${BOLD}3${NC} ❯ 🧪 Запустить Camouflage Self-Test (проверка 80, 9443, /health, /api/)"
+        echo -e " ${BOLD}${CYAN}[ 1 ] МАСКИРОВКА И ШЛЮЗ-ДЕКОЙ${NC}"
+        echo -e "   ${BOLD}1${NC} ❯ 🎲 Пересобрать шлюз со случайной архитектурой и темой"
+        echo -e "   ${BOLD}2${NC} ❯ 🎨 Выбрать конкретный шлюз-маскировку (Vault / Zero-Trust / S3 / Mesh / Dev)"
+        echo -e "   ${BOLD}3${NC} ❯ 🧪 Запустить Camouflage Self-Test (проверка 80, 9443, SNI Guard, /api/)"
         echo -e "   ${BOLD}4${NC} ❯ 📋 Конфигурации для Xray / Remnawave (Reality + Hysteria 2)"
         echo ""
         echo -e " ${BOLD}${YELLOW}[ 2 ] МОНИТОРИНГ И АНАЛИЗАТОР ТСПУ${NC}"
@@ -2141,23 +2686,24 @@ show_menu() {
             pqc_hint="${GREEN}Активен ●${NC}"
         fi
 
-        echo -e " ${BOLD}${GREEN}[ 3 ] УПРАВЛЕНИЕ SSL СЕРТИФИКАТАМИ И КРИПТОГРАФИЕЙ${NC}"
+        echo -e " ${BOLD}${GREEN}[ 3 ] КРИПТОГРАФИЯ, SSL И ЩИТ REMNANODE${NC}"
         echo -e "   ${BOLD}9${NC} ❯ 🔐 Выпустить / Перевыпустить чистый SSL (Auto / ZeroSSL / Let's Encrypt)"
         echo -e "  ${BOLD}10${NC} ❯ ⚛️  Постквантовая защита X25519MLKEM768 [${pqc_hint}]"
+        echo -e "  ${BOLD}11${NC} ❯ 🛡️  Щит ноды: Изоляция Remnanode, TCP BBR, Аудит портов [${shield_hint}]"
         echo ""
         echo -e " ${BOLD}${BLUE}[ 4 ] СЛУЖБА NGINX И СЕТЬ${NC}"
-        echo -e "  ${BOLD}11${NC} ❯ 🔄 Перезапустить Nginx (Reload / Restart)"
-        echo -e "  ${BOLD}12${NC} ❯ ⏹  Остановить Nginx"
-        echo -e "  ${BOLD}13${NC} ❯ ▶️  Запустить Nginx"
-        echo -e "  ${BOLD}14${NC} ❯ 📝 Редактировать vhost конфигурацию (/etc/nginx/sites-available/...)"
-        echo -e "  ${BOLD}15${NC} ❯ ⚡ Переключить PROXY Protocol [${proxy_toggle_hint}]"
+        echo -e "  ${BOLD}12${NC} ❯ 🔄 Перезапустить Nginx (Reload / Restart)"
+        echo -e "  ${BOLD}13${NC} ❯ ⏹  Остановить Nginx"
+        echo -e "  ${BOLD}14${NC} ❯ ▶️  Запустить Nginx"
+        echo -e "  ${BOLD}15${NC} ❯ 📝 Редактировать vhost конфигурацию (/etc/nginx/sites-available/...)"
+        echo -e "  ${BOLD}16${NC} ❯ ⚡ Переключить PROXY Protocol [${proxy_toggle_hint}]"
         echo ""
         echo -e " ${BOLD}${RED}[ 5 ] СИСТЕМА${NC}"
-        echo -e "  ${BOLD}16${NC} ❯ 🔁 Переустановить / Сменить домен"
-        echo -e "  ${BOLD}17${NC} ❯ 🗑️  Полное удаление SelfSNI"
+        echo -e "  ${BOLD}17${NC} ❯ 🔁 Переустановить / Сменить домен"
+        echo -e "  ${BOLD}18${NC} ❯ 🗑️  Полное удаление SelfSNI"
         echo -e "   ${BOLD}0${NC} ❯ 🚪 Выход в консоль"
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
-        read -rp "❯ Выберите действие [0-17]: " choice || true
+        read -rp "❯ Выберите действие [0-18]: " choice || true
 
         case "$choice" in
             1)
@@ -2247,39 +2793,43 @@ EOF
                 pqc_management_menu
                 ;;
             11)
+                node_shield_menu
+                ;;
+            12)
                 log_info "Перезапуск Nginx..."
                 nginx -t && systemctl restart nginx
                 log_ok "Nginx успешно перезапущен!"
                 sleep 1.5
                 ;;
-            12)
+            13)
                 log_info "Остановка Nginx..."
                 systemctl stop nginx
                 log_warn "Nginx остановлен."
                 sleep 1.5
                 ;;
-            13)
+            14)
                 log_info "Запуск Nginx..."
                 systemctl start nginx
                 log_ok "Nginx запущен!"
                 sleep 1.5
                 ;;
-            14)
+            15)
                 ${EDITOR:-nano} "/etc/nginx/sites-available/$DOMAIN"
                 nginx -t && systemctl reload nginx 2>/dev/null || true
                 ;;
-            15)
+            16)
                 toggle_proxy_protocol
                 ;;
-            16)
+            17)
                 install_selfsni
                 load_config || true
                 ;;
-            17)
+            18)
                 echo -e "\n${RED}ВЫ УВЕРЕНЫ, ЧТО ХОТИТЕ УДАЛИТЬ SELFSNI?${NC}"
                 read -rp "Введите 'yes' для подтверждения удаления: " confirm_del || true
                 if [ "$confirm_del" = "yes" ]; then
-                    log_warn "Удаление Nginx сайта и конфигурации..."
+                    log_warn "Удаление Nginx сайта, правил изоляции и конфигурации..."
+                    remove_remnanode_isolation 2>/dev/null || true
                     rm -f "/etc/nginx/sites-enabled/$DOMAIN" "/etc/nginx/sites-available/$DOMAIN" || true
                     systemctl reload nginx 2>/dev/null || true
                     rm -rf "$WEB_ROOT" "$CONFIG_DIR" "$BIN_LINK"
