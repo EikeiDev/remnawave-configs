@@ -2828,17 +2828,32 @@ link_certs_to_remnanode() {
         return 1
     fi
 
-    if grep -q "/etc/letsencrypt:" "$compose_path"; then
+    if grep -qE "^[[:space:]]*volumes:[[:space:]]*(#.*)?$" "$compose_path" && grep -qE "^[[:space:]]*-[[:space:]]*['\"]?/etc/letsencrypt:" "$compose_path"; then
         log_ok "Папка /etc/letsencrypt уже примонтирована в $compose_path!"
     else
-        cp "$compose_path" "${compose_path}.bak"
-        if grep -q "volumes:" "$compose_path"; then
-            sed -i '/volumes:/a \      - /etc/letsencrypt:/etc/letsencrypt:ro' "$compose_path"
+        # Сохраняем чистый бэкап (если .bak еще нет)
+        [ ! -f "${compose_path}.bak" ] && cp "$compose_path" "${compose_path}.bak"
+        # Если строка с /etc/letsencrypt уже была вставлена под закомментированный # volumes:, сначала очистим ее
+        sed -i '\|/etc/letsencrypt:/etc/letsencrypt|d' "$compose_path"
+
+        if grep -qE "^[[:space:]]*volumes:[[:space:]]*(#.*)?$" "$compose_path"; then
+            # Секция volumes: уже раскомментирована
+            sed -i -E '/^[[:space:]]*volumes:[[:space:]]*(#.*)?$/a \      - /etc/letsencrypt:/etc/letsencrypt:ro' "$compose_path"
+        elif grep -qE "^[[:space:]]*#[[:space:]]*volumes:[[:space:]]*(#.*)?$" "$compose_path"; then
+            # В стандартном шаблоне remnanode строка "# volumes:" закомментирована — раскомментируем ее и добавляем том
+            sed -i -E 's/^([[:space:]]*)#[[:space:]]*(volumes:[[:space:]]*(#.*)?)$/\1\2\n\1  - \/etc\/letsencrypt:\/etc\/letsencrypt:ro/' "$compose_path"
         else
-            cat << 'EOF' >> "$compose_path"
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-EOF
+            # Секции volumes нет вообще — добавляем в конец
+            printf "\n    volumes:\n      - /etc/letsencrypt:/etc/letsencrypt:ro\n" >> "$compose_path"
+        fi
+
+        # Проверяем валидность YAML через docker compose config; при любой ошибке откатываем бэкап
+        local compose_dir_check
+        compose_dir_check=$(dirname "$compose_path")
+        if command -v docker >/dev/null 2>&1 && ! (cd "$compose_dir_check" && (docker compose -f "$compose_path" config >/dev/null 2>&1 || docker-compose -f "$compose_path" config >/dev/null 2>&1)); then
+            log_err "Ошибка проверки синтаксиса YAML в $compose_path! Откат из резервной копии ${compose_path}.bak..."
+            cp "${compose_path}.bak" "$compose_path"
+            return 1
         fi
         log_ok "Монтирование /etc/letsencrypt:/etc/letsencrypt:ro добавлено в $compose_path (бэкап: .bak)"
     fi
