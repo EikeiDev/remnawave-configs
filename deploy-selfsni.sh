@@ -1288,6 +1288,9 @@ configure_nginx() {
     resolver_timeout 5s;"
     fi
 
+    # Подготовка каталога для внешних расширений (например, tproxy-server)
+    mkdir -p /etc/nginx/selfsni-extensions
+
     cat << EOF > "$nginx_conf"
 # ==============================================================================
 # NGINX SELFSNI FALLBACK & ANTI-IP-SCAN GUARD
@@ -1350,9 +1353,6 @@ $set_real_ip_dirs
     # Черный список активных сканеров ТСПУ / Censys / Shodan (C24Be AS Network List)
     include /etc/nginx/blacklist.conf;
 
-    # Лимит частоты запросов (защита от L7-флуда без ложных срабатываний на ассетах)
-    limit_req zone=selfsni_limit burst=50 nodelay;
-
     ssl_certificate /etc/letsencrypt/live/$target_domain/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$target_domain/privkey.pem;
 
@@ -1376,6 +1376,9 @@ $set_real_ip_dirs
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Подключение внешних модулей (например, Telegram WEB Proxy / tproxy-server)
+    include /etc/nginx/selfsni-extensions/*.conf;
 
     # Живые открытые эндпоинты мониторинга кластера
     location = /health {
@@ -1405,6 +1408,7 @@ $set_real_ip_dirs
 
     # Универсальный декой для остальных API путей XHTTP
     location ~ ^/api/ {
+        limit_req zone=selfsni_limit burst=50 nodelay;
         default_type application/json;
         return 401 '{"status":"error","code":"UNAUTHORIZED","message":"Authorization bearer token missing or expired"}';
     }
@@ -1425,6 +1429,7 @@ $set_real_ip_dirs
     }
 
     location / {
+        limit_req zone=selfsni_limit burst=50 nodelay;
         try_files \$uri \$uri/ /index.html =404;
     }
 
