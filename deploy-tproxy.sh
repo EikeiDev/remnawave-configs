@@ -7,6 +7,12 @@
 
 set -euo pipefail
 
+# Автоматическая очистка CRLF (\r), если файл был скопирован из буфера обмена Windows
+if [ -f "${BASH_SOURCE[0]:-$0}" ] && grep -q $'\r' "${BASH_SOURCE[0]:-$0}" 2>/dev/null; then
+    sed -i 's/\r$//' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true
+    exec bash "${BASH_SOURCE[0]:-$0}" "$@"
+fi
+
 # Цветовая палитра (в едином стиле с SelfSNI Control Core)
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -44,6 +50,7 @@ XHTTP_PATH="/api/v1/files/upload"
 BASE_PATH=""
 CARRIER_MODE="websocket"
 PRIMARY_SECRET=""
+MTPROXY_AD_TAG=""
 MTPROXY_WORKERS="1"
 MTPROXY_MAX_CONN="4096"
 MOBILE_OPTIMIZED="1"
@@ -120,6 +127,7 @@ XHTTP_PATH="${XHTTP_PATH:-/api/v1/files/upload}"
 BASE_PATH="${BASE_PATH}"
 CARRIER_MODE="${CARRIER_MODE:-websocket}"
 PRIMARY_SECRET="${PRIMARY_SECRET}"
+MTPROXY_AD_TAG="${MTPROXY_AD_TAG:-}"
 MTPROXY_WORKERS="${MTPROXY_WORKERS:-1}"
 MTPROXY_MAX_CONN="${MTPROXY_MAX_CONN:-4096}"
 MOBILE_OPTIMIZED="${MOBILE_OPTIMIZED:-1}"
@@ -572,15 +580,28 @@ EOF
         log_info "Обнаружен 1:1 NAT на сервере, активирован параметр MTProxy: ${nat_args}"
     fi
 
+    local tag_args=""
+    if [[ "${MTPROXY_AD_TAG:-}" =~ ^[0-9a-fA-F]{32}$ ]]; then
+        tag_args="-P $(echo "$MTPROXY_AD_TAG" | tr 'A-F' 'a-f')"
+    fi
+
     install -d -o root -g mtproxy -m 0750 /etc/mtproxy
     cat << EOF > "$MTPROXY_ENV"
 MTPROXY_SECRET=${mt_secret_args}
+MTPROXY_TAG_ARGS=${tag_args}
 MTPROXY_WORKERS=${MTPROXY_WORKERS:-1}
 MTPROXY_MAX_CONNECTIONS=${MTPROXY_MAX_CONN:-4096}
 MTPROXY_NAT_ARGS=${nat_args}
 EOF
     chown root:mtproxy "$MTPROXY_ENV"
     chmod 0640 "$MTPROXY_ENV"
+
+    # Если юнит mtproxy.service уже создан без MTPROXY_TAG_ARGS — обновляем его автоматически
+    if [ -f /etc/systemd/system/mtproxy.service ] && ! grep -q "MTPROXY_TAG_ARGS" /etc/systemd/system/mtproxy.service; then
+        sed -i '/Environment=MTPROXY_NAT_ARGS=/a Environment=MTPROXY_TAG_ARGS=' /etc/systemd/system/mtproxy.service
+        sed -i 's/-S \$MTPROXY_SECRET \$MTPROXY_NAT_ARGS/-S $MTPROXY_SECRET $MTPROXY_TAG_ARGS $MTPROXY_NAT_ARGS/' /etc/systemd/system/mtproxy.service
+        systemctl daemon-reload 2>/dev/null || true
+    fi
 }
 
 install_systemd_units_and_firewall() {
@@ -629,9 +650,10 @@ Group=mtproxy
 EnvironmentFile=/etc/mtproxy/mtproxy.env
 Environment=MTPROXY_WORKERS=1
 Environment=MTPROXY_MAX_CONNECTIONS=4096
+Environment=MTPROXY_TAG_ARGS=
 Environment=MTPROXY_NAT_ARGS=
 WorkingDirectory=/opt/MTProxy
-ExecStart=/opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p ${MTPROXY_STATS_PORT} -H ${MTPROXY_PORT} -S \$MTPROXY_SECRET \$MTPROXY_NAT_ARGS --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M \${MTPROXY_WORKERS} -C \${MTPROXY_MAX_CONNECTIONS}
+ExecStart=/opt/MTProxy/objs/bin/mtproto-proxy -u mtproxy -p ${MTPROXY_STATS_PORT} -H ${MTPROXY_PORT} -S \$MTPROXY_SECRET \$MTPROXY_TAG_ARGS \$MTPROXY_NAT_ARGS --aes-pwd /etc/mtproxy/proxy-secret /etc/mtproxy/proxy-multi.conf -M \${MTPROXY_WORKERS} -C \${MTPROXY_MAX_CONNECTIONS}
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=1048576
@@ -702,6 +724,12 @@ EOF
     cat << 'EOF' > /usr/local/sbin/refresh-mtproxy-config
 #!/usr/bin/env bash
 set -euo pipefail
+
+# Автоматическая очистка CRLF (\r), если файл был скопирован из буфера обмена Windows
+if [ -f "${BASH_SOURCE[0]:-$0}" ] && grep -q $'\r' "${BASH_SOURCE[0]:-$0}" 2>/dev/null; then
+    sed -i 's/\r$//' "${BASH_SOURCE[0]:-$0}" 2>/dev/null || true
+    exec bash "${BASH_SOURCE[0]:-$0}" "$@"
+fi
 
 destination=/etc/mtproxy/proxy-multi.conf
 temporary="$(mktemp /etc/mtproxy/proxy-multi.conf.XXXXXX)"
@@ -1138,13 +1166,21 @@ profiles_management_menu() {
         echo -e "${CYAN}╰────────────────────────────────────────────────────────────────────────────╯${NC}"
         print_connection_info
 
+        local ad_tag_display="${DIM}Не задан${NC}"
+        if [ -n "${MTPROXY_AD_TAG:-}" ]; then
+            ad_tag_display="${GREEN}${BOLD}${MTPROXY_AD_TAG}${NC}"
+        fi
+        echo -e "  • ${BOLD}Рекламный тег (@MTProxyBot Ad-Tag):${NC} ${ad_tag_display}"
+
         echo -e "\n   ${BOLD}1${NC} ❯ ➕ Добавить новый профиль (отдельный секрет и свой Carrier Mode)"
         echo -e "   ${BOLD}2${NC} ❯ 🔄 Сгенерировать новый секрет для основного профиля (default)"
         echo -e "   ${BOLD}3${NC} ❯ 🗑️  Удалить дополнительный профиль"
+        echo -e "   ${BOLD}4${NC} ❯ 📢 Установить / изменить рекламный тег (ad_tag от @MTProxyBot)"
         echo -e "   ${BOLD}0${NC} ❯ ↩️  Назад в главное меню"
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
         local p_choice=""
-        read -rp "❯ Выберите действие [0-3]: " p_choice || true
+        read -rp "❯ Выберите действие [0-4]: " p_choice || true
+        p_choice=$(echo "$p_choice" | tr -cd '0-9')
 
         case "$p_choice" in
             1)
@@ -1239,6 +1275,29 @@ profiles_management_menu() {
                     rm -f "$tmp_p"
                 fi
                 sleep 1.5
+                ;;
+            4)
+                echo -e "\n${BOLD}${CYAN}НАСТРОЙКА РЕКЛАМНОГО ТЕГА (@MTProxyBot Ad-Tag / -P):${NC}"
+                echo -e "${DIM}Как получить: напишите @MTProxyBot ➔ /newproxy ➔ укажите <IP_сервера>:443 и ваш 32-hex Secret.${NC}"
+                local tag_in=""
+                read -rp "Введите 32-символьный hex Ad-Tag [оставьте пустым для отключения]: " tag_in || true
+                tag_in=$(echo "$tag_in" | tr 'A-F' 'a-f' | tr -d '[:space:]')
+                if [ -z "$tag_in" ]; then
+                    MTPROXY_AD_TAG=""
+                    log_info "Рекламный тег (ad_tag) отключен."
+                elif [[ "$tag_in" =~ ^[0-9a-f]{32}$ ]]; then
+                    MTPROXY_AD_TAG="$tag_in"
+                    log_ok "Рекламный тег установлен: $MTPROXY_AD_TAG"
+                else
+                    log_err "Некорректный формат! Ad-Tag от @MTProxyBot должен состоять ровно из 32 hex-символов."
+                    sleep 2
+                    continue
+                fi
+                save_tproxy_env
+                write_tproxy_configs
+                start_and_verify_services
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
                 ;;
             0)
                 return 0
@@ -1345,6 +1404,17 @@ install_tproxy() {
         PRIMARY_SECRET="$auto_secret"
     fi
     log_info "Установлен секрет: $PRIMARY_SECRET"
+
+    echo -e "\n${DIM}Подсказка: Вы можете зарегистрировать <IP_сервера>:443 и секрет $PRIMARY_SECRET в @MTProxyBot для спонсорского канала.${NC}"
+    local tag_input=""
+    read -rp "Рекламный тег от @MTProxyBot (32 hex, опционально) [Enter — пропустить]: " tag_input || true
+    tag_input=$(echo "$tag_input" | tr 'A-F' 'a-f' | tr -d '[:space:]')
+    if [[ "$tag_input" =~ ^[0-9a-f]{32}$ ]]; then
+        MTPROXY_AD_TAG="$tag_input"
+        log_info "Активирован рекламный тег (ad_tag): $MTPROXY_AD_TAG"
+    else
+        MTPROXY_AD_TAG=""
+    fi
 
     echo -e "\n${MAGENTA}4. ОПТИМИЗАЦИЯ ДЛЯ МОБИЛЬНЫХ КЛИЕНТОВ И РЕСУРСОВ СЕРВЕРА:${NC}"
     local mob_input=""
@@ -1501,7 +1571,7 @@ show_menu() {
         echo -e " ${BOLD}${CYAN}[ 1 ] ПОДКЛЮЧЕНИЕ И ПРОФИЛИ${NC}"
         echo -e "   ${BOLD}1${NC} ❯ 📲 Показать ссылки подключения (t.me/webproxy) и секреты профилей"
         echo -e "   ${BOLD}2${NC} ❯ ⚡ Сменить транспортный режим Carrier Mode (websocket / lanes / https)"
-        echo -e "   ${BOLD}3${NC} ❯ 👥 Управление профилями и секретами (добавить / сменить / удалить)"
+        echo -e "   ${BOLD}3${NC} ❯ 👥 Управление профилями, секретами и Ad-Tag (@MTProxyBot)"
         echo -e "   ${BOLD}4${NC} ❯ 🔗 Сменить Base Path (префикс пути) или переключить Mode B / Mode A"
         echo ""
         echo -e " ${BOLD}${YELLOW}[ 2 ] ДИАГНОСТИКА И МОНИТОРИНГ${NC}"
@@ -1522,6 +1592,7 @@ show_menu() {
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
         local choice=""
         read -rp "❯ Выберите действие [0-13]: " choice || true
+        choice=$(echo "$choice" | tr -cd '0-9')
 
         case "$choice" in
             1)
@@ -1665,6 +1736,13 @@ show_menu() {
 # ТОЧКА ВХОДА
 # ==============================================================================
 check_root
+if [ -f "${BASH_SOURCE[0]:-}" ]; then
+    _self_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+    if [ "$_self_file" != "/usr/local/bin/tproxy" ] && [ -d /usr/local/bin ]; then
+        cp -f "$_self_file" /usr/local/bin/tproxy 2>/dev/null || true
+        chmod +x /usr/local/bin/tproxy 2>/dev/null || true
+    fi
+fi
 if [ -f "$TPROXY_CONF" ] && [ -x "/usr/local/bin/tproxy-server" ]; then
     show_menu
 else
