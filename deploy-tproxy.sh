@@ -59,6 +59,7 @@ TPROXY_ADMIN_PORT="8081"
 MIRROR_PORT="9480"
 MTPROXY_PORT="2398"
 MTPROXY_STATS_PORT="8888"
+DIRECT_443_MODE="0"
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_ok()   { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -136,6 +137,7 @@ TPROXY_ADMIN_PORT="${TPROXY_ADMIN_PORT:-8081}"
 MIRROR_PORT="${MIRROR_PORT:-9480}"
 MTPROXY_PORT="${MTPROXY_PORT:-2398}"
 MTPROXY_STATS_PORT="${MTPROXY_STATS_PORT:-8888}"
+DIRECT_443_MODE="${DIRECT_443_MODE:-0}"
 EOF
     chmod 600 "$TPROXY_ENV"
 }
@@ -976,6 +978,7 @@ EOF
     fi
 
     # 3. Проверяем наличие директивы include /etc/nginx/selfsni-extensions/*.conf; в конфиге домена SelfSNI
+    #    а также настраиваем умный режим порта 443 (работа как с нодой Remnanode, так и без ноды!)
     local vhost_file="/etc/nginx/sites-available/${DOMAIN}"
     if [ -f "$vhost_file" ]; then
         if ! grep -q "/etc/nginx/selfsni-extensions/\*\.conf" "$vhost_file"; then
@@ -985,6 +988,50 @@ EOF
             sed -i '/^[[:space:]]*limit_req zone=selfsni_limit/d' "$vhost_file"
             # Вставляем include перед первой локацией в основном блоке сервера
             sed -i '/add_header Strict-Transport-Security/a \    include /etc/nginx/selfsni-extensions/*.conf;' "$vhost_file"
+        fi
+
+        # Настраиваем режим порта 443 строго по выбору пользователя (0 = с нодой Remnanode, 1 = без ноды напрямую)
+        local want_direct_443="0"
+        if [ "${DIRECT_443_MODE:-0}" = "1" ]; then
+            want_direct_443="1"
+            log_info "Режим БЕЗ ноды: включаем прямой прием внешнего 443 порта в Nginx (+ сохраняем 127.0.0.1:${FALLBACK_PORT})..."
+        else
+            want_direct_443="0"
+            log_info "Режим С НОДОЙ Remnanode: Nginx слушает только внутренний порт 127.0.0.1:${FALLBACK_PORT} (порт 443 свободен для Xray)..."
+        fi
+
+        sed -i '/# SELFSNI_DIRECT_443/d' "$vhost_file"
+        if [ "$want_direct_443" = "1" ]; then
+            local h2_tok=""
+            if grep -qE "listen[[:space:]]+127\.0\.0\.1:[0-9]+[[:space:]]+ssl[[:space:]]+http2" "$vhost_file"; then
+                h2_tok=" http2"
+            fi
+            local has_v6="0"
+            if grep -q "listen \[::\]:80" "$vhost_file"; then
+                has_v6="1"
+            fi
+            local tmp_v
+            tmp_v="$(mktemp /tmp/vhost-443.XXXXXX)"
+            if awk -v h2="$h2_tok" -v v6="$has_v6" '
+                /listen[[:space:]]+127\.0\.0\.1:[0-9]+[[:space:]]+ssl/ {
+                    if ($0 ~ /default_server/) {
+                        print "    listen 443 ssl" h2 " default_server; # SELFSNI_DIRECT_443"
+                        if (v6 == "1") print "    listen [::]:443 ssl" h2 " default_server; # SELFSNI_DIRECT_443"
+                    } else {
+                        print "    listen 443 ssl" h2 "; # SELFSNI_DIRECT_443"
+                        if (v6 == "1") print "    listen [::]:443 ssl" h2 "; # SELFSNI_DIRECT_443"
+                    }
+                }
+                { print }
+            ' "$vhost_file" > "$tmp_v"; then
+                mv -f "$tmp_v" "$vhost_file"
+            else
+                rm -f "$tmp_v"
+            fi
+            if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi "Status: active"; then
+                ufw allow 443/tcp >/dev/null 2>&1 || true
+                ufw allow 443/udp >/dev/null 2>&1 || true
+            fi
         fi
     else
         log_warn "Файл $vhost_file не найден! Убедитесь, что SelfSNI установлен для домена $DOMAIN."
@@ -1444,6 +1491,20 @@ install_tproxy() {
         MTPROXY_MAX_CONN="4096"
     fi
 
+    echo -e "\n${MAGENTA}5. ВЫБОР РЕЖИМА РАБОТЫ ПОРТА 443 (С НОДОЙ REMNANODE ИЛИ БЕЗ НОДЫ):${NC}"
+    echo -e "1) ${GREEN}В связке с нодой Remnanode / Xray${NC} — Nginx слушает только 127.0.0.1:${FALLBACK_PORT} (443 порт занимает нода)"
+    echo -e "2) ${CYAN}Автономный режим БЕЗ ноды${NC}         — Nginx сам принимает внешний 443 порт (сайт и TProxy работают без ноды)"
+    local m443_in=""
+    read -rp "Выберите режим порта 443 [1-2, по умолчанию: 1]: " m443_in || true
+    m443_in=$(echo "${m443_in:-1}" | tr -cd '0-9')
+    if [ "$m443_in" = "2" ]; then
+        DIRECT_443_MODE="1"
+        log_info "Выбран автономный режим БЕЗ ноды (Nginx слушает внешний 443 порт + 127.0.0.1:${FALLBACK_PORT})."
+    else
+        DIRECT_443_MODE="0"
+        log_info "Выбран режим В СВЯЗКЕ С НОДОЙ Remnanode (Nginx слушает только 127.0.0.1:${FALLBACK_PORT})."
+    fi
+
     echo ""
     # Удаляем старый profiles.json при чистой переустановке, чтобы записать чистый профиль
     rm -f "$TPROXY_PROFILES"
@@ -1558,11 +1619,16 @@ show_menu() {
             route_display="/${BASE_PATH}/ (Скрытый префикс Mode B)"
         fi
 
+        local bridge_mode_label="443 Reality ➔ :${FALLBACK_PORT} Nginx ➔ :${TPROXY_PORT} TProxy"
+        if [ -f "/etc/nginx/sites-available/${DOMAIN}" ] && grep -q "# SELFSNI_DIRECT_443" "/etc/nginx/sites-available/${DOMAIN}" 2>/dev/null; then
+            bridge_mode_label="Прямой :443 (Без ноды) + :${FALLBACK_PORT} ➔ :${TPROXY_PORT} TProxy"
+        fi
+
         echo -e "${CYAN}╭────────────────────────────────────────────────────────────────────────────╮${NC}"
         echo -e "${CYAN}│${BOLD}   ◈ TPROXY CONTROL CORE  ${NC}${DIM}•  Telegram WEB Proxy + SelfSNI Co-Hosting       ${CYAN}│${NC}"
         echo -e "${CYAN}├────────────────────────────────────────────────────────────────────────────┤${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Релей TProxy:${NC}   ${tp_color}${tp_status} ●${NC} ${DIM}[127.0.0.1:${TPROXY_PORT}]${NC}  |  ${BOLD}MTProxy:${NC} ${mt_color}${mt_status} ●${NC} ${DIM}[127.0.0.1:${MTPROXY_PORT}]${NC}"
-        echo -e "${CYAN}│${NC}  ${BOLD}• Мост SelfSNI:${NC}   ${ng_color}${ng_status} ●${NC} ${DIM}[443 Reality ➔ :${FALLBACK_PORT} Nginx ➔ :${TPROXY_PORT} TProxy]${NC}"
+        echo -e "${CYAN}│${NC}  ${BOLD}• Мост SelfSNI:${NC}   ${ng_color}${ng_status} ●${NC} ${DIM}[${bridge_mode_label}]${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Домен и путь:${NC}   ${WHITE}${DOMAIN:-Не настроен}${NC}  ${CYAN}${route_display}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Carrier Mode:${NC}   ${GREEN}${CARRIER_MODE:-websocket}${NC} ${DIM}[Воркеров MTProxy: ${MTPROXY_WORKERS:-1} • Лимит: ${MTPROXY_MAX_CONN:-4096}]${NC}  |  ${BOLD}DC Sync:${NC} ${dc_timer_color}${dc_timer_status}${NC}"
         echo -e "${CYAN}│${NC}  ${BOLD}• Живой трафик:${NC}   ${WHITE}Сессий: ${GREEN}${live_sessions:-0}${WHITE} | Потоков: ${CYAN}${live_streams:-0}${WHITE} | ↑ ${bytes_up:-0 MB} ↓ ${bytes_down:-0 MB}${NC}"
@@ -1583,7 +1649,7 @@ show_menu() {
         echo -e "   ${BOLD}8${NC} ❯ 🔄 Принудительно обновить конфиги DC Telegram (автообновление: раз в сутки)"
         echo -e "   ${BOLD}9${NC} ❯ 🛠️  Обновить из GitHub (telegramdesktop/tproxy-server) и пересобрать"
         echo -e "  ${BOLD}10${NC} ❯ ⚙️  Тюнинг ресурсов (Воркеры MTProxy, Мобильный профиль, NAT --nat-info)"
-        echo -e "  ${BOLD}11${NC} ❯ 🔌 Пересинхронизировать конфигурацию с Nginx SelfSNI"
+        echo -e "  ${BOLD}11${NC} ❯ 🔌 Режим порта 443 (Без ноды ⇄ С нодой Remnanode) и синхронизация Nginx"
         echo ""
         echo -e " ${BOLD}${RED}[ 4 ] СИСТЕМА${NC}"
         echo -e "  ${BOLD}12${NC} ❯ 🔁 Полная переустановка TProxy с нуля"
@@ -1712,6 +1778,18 @@ show_menu() {
                 read -r || true
                 ;;
             11)
+                echo -e "\n${BOLD}${CYAN}ВЫБОР РЕЖИМА РАБОТЫ ПОРТА 443 И СИНХРОНИЗАЦИИ С NGINX SELFSNI:${NC}"
+                echo -e "1) ${GREEN}В связке с нодой Remnanode / Xray${NC} — Nginx слушает только 127.0.0.1:${FALLBACK_PORT} (443 порт свободен для ноды)"
+                echo -e "2) ${CYAN}Автономный режим БЕЗ ноды${NC}         — Nginx сам принимает внешний 443 порт + 127.0.0.1:${FALLBACK_PORT}"
+                local mode443_sel=""
+                read -rp "Выберите режим [1-2, по умолчанию: 1]: " mode443_sel || true
+                mode443_sel=$(echo "${mode443_sel:-1}" | tr -cd '0-9')
+                if [ "$mode443_sel" = "2" ]; then
+                    DIRECT_443_MODE="1"
+                else
+                    DIRECT_443_MODE="0"
+                fi
+                save_tproxy_env
                 configure_nginx_integration
                 start_and_verify_services
                 echo -e "\nНажмите Enter для возврата в меню..."
