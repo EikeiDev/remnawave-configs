@@ -80,6 +80,7 @@ REMNANODE_PORT="${REMNANODE_PORT:-}"
 PANEL_IP="${PANEL_IP:-}"
 HARDENING_BBR="${HARDENING_BBR:-0}"
 XHTTP_PATH="${XHTTP_PATH:-/api/v1/files/upload}"
+DIRECT_443_MODE="${DIRECT_443_MODE:-0}"
 EOF
 }
 
@@ -1272,9 +1273,30 @@ configure_nginx() {
     # Проверка активности IPv6 в ядре (предотвращает ошибку Address family not supported на IPv4-only VPS)
     local listen_ipv6_default=""
     local listen_ipv6_standard=""
+    local has_ipv6=0
     if [ -f /proc/net/if_inet6 ] && [ -s /proc/net/if_inet6 ] && [ "$(sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null || echo 1)" -eq 0 ]; then
         listen_ipv6_default="listen [::]:80 default_server;"
         listen_ipv6_standard="listen [::]:80;"
+        has_ipv6=1
+    fi
+
+    # Режим порта 443 по выбору пользователя (0 = с нодой Remnanode, 1 = без ноды напрямую)
+    local direct_443_guard=""
+    local direct_443_main=""
+    local want_direct_443=0
+    if [ "${DIRECT_443_MODE:-0}" = "1" ]; then
+        want_direct_443=1
+    fi
+
+    if [ "$want_direct_443" -eq 1 ]; then
+        direct_443_guard="listen 443 ssl $listen_http2_inline default_server; # SELFSNI_DIRECT_443"
+        direct_443_main="listen 443 ssl $listen_http2_inline; # SELFSNI_DIRECT_443"
+        if [ "$has_ipv6" -eq 1 ]; then
+            direct_443_guard="${direct_443_guard}
+    listen [::]:443 ssl $listen_http2_inline default_server; # SELFSNI_DIRECT_443"
+            direct_443_main="${direct_443_main}
+    listen [::]:443 ssl $listen_http2_inline; # SELFSNI_DIRECT_443"
+        fi
     fi
 
     # Включаем OCSP Stapling только если в сертификате присутствует OCSP Responder URI
@@ -1327,6 +1349,7 @@ server {
 
 # 3. Защита Fallback-порта от сканирования по IP без знания SNI (скрытие сертификата и домена)
 server {
+    $direct_443_guard
     listen 127.0.0.1:$target_port ssl $listen_http2_inline $proxy_proto_dir default_server;
     $http2_standalone_dir
     server_name _;
@@ -1345,6 +1368,7 @@ $set_real_ip_dirs
 
 # 4. Основной защищенный шлюз маскировки (отвечает ТОЛЬКО при точном совпадении SNI = $target_domain)
 server {
+    $direct_443_main
     listen 127.0.0.1:$target_port ssl $listen_http2_inline $proxy_proto_dir;
     $http2_standalone_dir
     server_name $target_domain;
@@ -1904,6 +1928,20 @@ install_selfsni() {
     XHTTP_PATH=$(echo "$XHTTP_PATH" | tr -d '[:space:]')
     [[ "$XHTTP_PATH" != /* ]] && XHTTP_PATH="/$XHTTP_PATH"
     log_info "Защищенный маршрут XHTTP: $XHTTP_PATH"
+
+    echo -e "\n${MAGENTA}РЕЖИМ РАБОТЫ ВНЕШНЕГО ПОРТА 443:${NC}"
+    echo -e "1) ${GREEN}В связке с нодой Remnanode / Xray${NC} — Nginx слушает только 127.0.0.1:${FALLBACK_PORT} (443 порт занимает нода)"
+    echo -e "2) ${CYAN}Автономный режим БЕЗ ноды${NC}         — Nginx сам принимает внешний 443 порт (сайт работает напрямую без ноды)"
+    local mode443_in=""
+    read -rp "Выберите режим порта 443 [1-2, по умолчанию: 1]: " mode443_in || true
+    mode443_in=$(echo "${mode443_in:-1}" | tr -cd '0-9')
+    if [ "$mode443_in" = "2" ]; then
+        DIRECT_443_MODE="1"
+        log_info "Режим порта 443: АВТОНОМНЫЙ БЕЗ НОДЫ (Nginx слушает внешний 443 порт + 127.0.0.1:${FALLBACK_PORT})"
+    else
+        DIRECT_443_MODE="0"
+        log_info "Режим порта 443: В СВЯЗКЕ С НОДОЙ Remnanode (Nginx слушает только 127.0.0.1:${FALLBACK_PORT})"
+    fi
 
     echo -e "\n${MAGENTA}ВЫБОР АРХИТЕКТУРЫ ШЛЮЗА ДЛЯ МАСКИРОВКИ:${NC}"
     echo -e "1) ${CYAN}[Случайно]${NC} 🎲 Автоматический выбор случайного шлюза (Рекомендуется)"
@@ -2999,9 +3037,11 @@ node_shield_menu() {
         echo -e "   ${BOLD}4${NC} ❯ 🔗 Подключить сертификаты SelfSNI в контейнер Remnanode (Docker Volume)"
         echo -e "   ${BOLD}5${NC} ❯ 🔍 Полный Аудит видимости ноды глазами ТСПУ (Открытые порты и утечки)"
         echo -e "   ${BOLD}6${NC} ❯ 🔄 Обновить конфиг Nginx с защитой от IP-сканов (SNI Guard)"
+        echo -e "   ${BOLD}7${NC} ❯ 🌐 Переключить режим порта 443 (С нодой Remnanode ⇄ Без ноды напрямую)"
         echo -e "   ${BOLD}0${NC} ❯ 🔙 Вернуться в главное меню"
         echo -e "${CYAN}──────────────────────────────────────────────────────────────────────────────${NC}"
-        read -rp "❯ Выберите действие [0-6]: " sh_choice || true
+        read -rp "❯ Выберите действие [0-7]: " sh_choice || true
+        sh_choice=$(echo "$sh_choice" | tr -cd '0-9')
 
         case "$sh_choice" in
             1)
@@ -3030,6 +3070,23 @@ node_shield_menu() {
                 read -r || true
                 ;;
             6)
+                configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
+                echo -e "\nНажмите Enter для продолжения..."
+                read -r || true
+                ;;
+            7)
+                echo -e "\n${BOLD}${CYAN}ВЫБОР РЕЖИМА ВНЕШНЕГО ПОРТА 443:${NC}"
+                echo -e "1) ${GREEN}В связке с нодой Remnanode / Xray${NC} — Nginx слушает только 127.0.0.1:${FALLBACK_PORT} (443 порт для ноды)"
+                echo -e "2) ${CYAN}Автономный режим БЕЗ ноды${NC}         — Nginx сам слушает внешний 443 порт + 127.0.0.1:${FALLBACK_PORT}"
+                local m443_sel=""
+                read -rp "Выберите режим [1-2, по умолчанию: 1]: " m443_sel || true
+                m443_sel=$(echo "${m443_sel:-1}" | tr -cd '0-9')
+                if [ "$m443_sel" = "2" ]; then
+                    DIRECT_443_MODE="1"
+                else
+                    DIRECT_443_MODE="0"
+                fi
+                save_config
                 configure_nginx "$DOMAIN" "$FALLBACK_PORT" "$USE_PROXY_FLAG" "${WEB_ROOT:-/var/www/$DOMAIN}"
                 echo -e "\nНажмите Enter для продолжения..."
                 read -r || true
